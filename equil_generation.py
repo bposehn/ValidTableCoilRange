@@ -6,6 +6,7 @@ import pandas as pd
 
 from flagships.gs_solver.run_from_yaml_axis_values_and_coil_configs import run_from_yaml_axis_values_and_coil_configs
 from flagships.post_processing import GenerateColumns
+from flagships.post_processing.GenerateColumns import read_columns_from_equil
 
 def get_coil_configs_at_corners_and_on_axes(base_coil_config: Dict[str, float], num_corners, max_fractional_change, max_absolute_change = None, coils_to_ignore: List[str]= None):
     coils_of_interest = [coil_name for coil_name in base_coil_config if coil_name not in coils_to_ignore]
@@ -65,5 +66,11 @@ if __name__ == '__main__':
     output_files = run_from_yaml_axis_values_and_coil_configs(yaml_file, table_axis_configs_to_make, coil_configs_to_make,
                                                               'make_equils', force_recalc=False, dc_file=dc_file)
 
+    # 1 (base) + (# axes + 1)*num_corners coil configs per equil
+    bprobe_column_names = ['B161087', 'B211100', 'B291060', 'B215008', 'B261008', 'B291008', 'B261087']
+    query_column_names = ['WBpolFCnoDC', 'q050', 'NevinsC', 'beta_pol1']
+    arr = read_columns_from_equil(output_files, query_column_names)
 
-    pickle.dump(output_files, open('data/output_filenames.pickle', 'wb'))
+    df = pd.DataFrame(data=arr, columns=query_column_names)
+    df.insert(0, 'FileName', output_files)
+    df.to_csv('data/column_data.csv', index=False)
