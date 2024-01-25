@@ -32,6 +32,22 @@ def get_coil_configs_at_corners_and_on_axes(base_coil_config: Dict[str, float], 
             coil_configs.append(single_axis_varied_coil_config)
 
     return coil_configs
+
+def get_single_axis_incremented_coil_configs(base_coil_config: Dict[str, float], num_points, max_fractional_change, coils_to_ignore: List[str]= None):
+    coils_of_interest = [coil_name for coil_name in base_coil_config if coil_name not in coils_to_ignore]
+
+    increments = np.linspace(0, max_fractional_change, 1+num_points)*max(base_coil_config.values())
+    increments = increments.tolist()[1:]
+
+    coil_configs = []
+    coil_configs.append(base_coil_config)
+    for coil_name in coils_of_interest:
+        for increment in increments:
+            coil_config = base_coil_config.copy()
+            coil_config[coil_name] += increment
+            coil_configs.append(coil_config)
+    
+    return coil_configs
     
 if __name__ == '__main__':
     ta_configs = []
@@ -44,7 +60,7 @@ if __name__ == '__main__':
     del coil_currents['PlasmaCurrent']
     del coil_currents['PFC_3']
 
-    coil_configs = get_coil_configs_at_corners_and_on_axes(coil_currents, 10, .3, 120, ['Coil_B', 'PFC_3'])
+    coil_configs = get_single_axis_incremented_coil_configs(coil_currents, 10, .3, ['Coil_B', 'PFC_3'])
 
     table_axis_configs = pd.read_csv('data/test_table_axis_configs.csv')
     table_axis_config_list = []
@@ -62,11 +78,12 @@ if __name__ == '__main__':
         table_axis_configs_to_make += [table_axis_config]*num_coil_configs_per_table_axis_config 
     coil_configs_to_make = coil_configs*num_table_axis_configs
 
+    pickle.dump({'TA':table_axis_configs_to_make, 'Coils':coil_configs_to_make})
+
     dc_file = '/home/brendan.posehn@gf.local/dev/gf/flagships/ext_psi_files/pi3/pi3b_as_built_2022-09-16_G486_18425-18433.FEM'
     output_files = run_from_yaml_axis_values_and_coil_configs(yaml_file, table_axis_configs_to_make, coil_configs_to_make,
                                                               'make_equils', force_recalc=False, dc_file=dc_file)
 
-    # 1 (base) + (# axes + 1)*num_corners coil configs per equil
     bprobe_column_names = ['B161087', 'B211100', 'B291060', 'B215008', 'B261008', 'B291008', 'B261087']
     query_column_names = ['WBpolFCnoDC', 'q050', 'NevinsC', 'beta_pol1']
     arr = read_columns_from_equil(output_files, query_column_names)
