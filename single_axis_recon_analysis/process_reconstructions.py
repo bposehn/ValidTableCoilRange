@@ -110,9 +110,9 @@ def get_truth_outside_sigma_bound(organized_df: pd.DataFrame, sigma_range: float
                     data[i_ta_config, i_data_column] = np.nan # Represents coil range was not large enough to get to point when is oor 
 
                 lowest_failed_coil_index = min(coil_indexes)
-                lowest_failed_coil_value = varying_coils_df.iloc[lowest_failed_coil_index][coil_name]
+                lowest_failed_coil_deviance = varying_coils_df.iloc[lowest_failed_coil_index][coil_name] - organized_df.iloc[0][coil_name]
         
-                data[i_ta_config, i_data_column] = lowest_failed_coil_value
+                data[i_ta_config, i_data_column] = lowest_failed_coil_deviance
 
     df = pd.DataFrame(data, col_names)
 
@@ -129,10 +129,43 @@ def plot_truth_outside_sigma_bound(TOSB_df):
         for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
             vals = TOSB_df['TOSB_' + coil_name + '_' + col_name]
             medians.append(vals.median())
-            ax.hist(vals, label=col_name, alpha=.5, color=query_column_colors[i_col_name])
-        ax.axvline(x = min(medians), c=query_column_colors[np.argmax(medians)])
+            ax.hist(vals, label=col_name, histtype='step', color=query_column_colors[i_col_name])
+        ax.axvline(x = min(medians), c=query_column_colors[np.argmin(medians)])
+        ax.set_xlabel('Coil Deviation (A)')
         ax.legend()
+        ax.set_title(coil_name)
 
-def analyze_test_set_size()
+    plt.show()
+
+def plot_test_set_size_analysis(organized_df: pd.DataFrame):
+    #for each coil, for each col, show that avg error reaches asymptote
+
+    num_testcases = 200
+    num_testcases_per_iteration = np.arange(40, num_testcases+1, 20, dtype=int) # can be used as i_ta_config idxs
+    i_ta_configs = np.arange(0, num_testcases, 1, dtype=int)
+    random.shuffle(i_ta_configs)
+    i_ta_configs_per_iteration = [i_ta_configs[:num_testcases_in_iteration] for num_testcases_in_iteration in num_testcases_per_iteration]
+    
+    i_coil_configs_to_test = [0, 10, 20, 30, 40, 50] # Base (0) and all extrema in order
+    coil_config_names = ['Base'] + [coil + ' Max Change' for coil in COILS_OF_INTEREST]
+    
+    num_columns = 3
+    fig, axs = plt.subplots(int(len(i_coil_configs_to_test)/num_columns), num_columns)
+    for i_i_coil_config, i_coil_config_to_test in enumerate(i_coil_configs_to_test):
+        coil_config_df = organized_df.loc[organized_df['Coil Config Index'] == i_coil_config_to_test]
+        ax = axs[int(i_i_coil_config/num_columns), i_i_coil_config%num_columns]
+        for col_name in QUERY_COLUMN_NAMES:
+            vals = []
+            for i_ta_configs_in_iteration in i_ta_configs_per_iteration:
+                df = coil_config_df.loc[coil_config_df['TA Config Index'].isin(i_ta_configs_in_iteration)]
+                vals.append(abs((df[col_name + '_truth'] - df[col_name + '_mean']) / df[col_name + '_1sigma']).mean())
+            ax.plot(num_testcases_per_iteration, vals, label = col_name)
+        ax.set_xlabel('Number of testcases')
+        ax.set_ylabel('Z Score')
+        ax.legend()
+        ax.set_title(coil_config_names[i_i_coil_config])
+
+    plt.show()
 
 if __name__ == '__main__':
+    pass
