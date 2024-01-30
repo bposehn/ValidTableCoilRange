@@ -4,9 +4,13 @@ import random
 import time
 import pickle
 import re
+import itertools
+import math
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 COILS_OF_INTEREST = ['Coil_A', 'Coil_C', 'Coil_D', 'PFC_1','PFC_3']
 QUERY_COLUMN_NAMES = ['WBpolFCnoDC', 'q050', 'NevinsC', 'beta_pol1']
@@ -74,28 +78,61 @@ def get_truth_outside_sigma_bound(organized_df: pd.DataFrame, sigma_range: float
 
     col_type = 'TOSB'
     col_descriptors = [prod[0] + '_' + prod[1] for prod in itertools.product(COILS_OF_INTEREST, QUERY_COLUMN_NAMES)]
-    col_names = [col_type + coil_name for descriptor in col_descriptors]
-    data = np.empty((len(organized_df, len(COILS_OF_INTEREST))))
+    col_names = [col_type + '_' + coil_name for descriptor in col_descriptors]
+
+    num_ta_configs = len(organized_df[ta_config_index_colname].unique())
+
+    data = np.empty((len(num_ta_configs, len(col_names))))
     
     ta_config_index_colname = 'TA Config Index'
 
-    #each TA config, each coil 
+    # Entry for each table axis config, for each coil, for each col 
+    filenames = []
     for i_ta_config in organized_df[ta_config_index_colname].unique():
         first_i_ta_config_index = organized_df.where(organized_df[ta_config_index_colname] == i_ta_config).first_valid_index()
+        filenames.append(organized_df.iloc[first_i_ta_config_index]['FileName'])
         base_coil_row = pd.DataFrame(data = [organized_df.iloc[first_i_ta_config_index]], columns = organized_df.columns)
-        for coil_name in COILS_OF_INTEREST:
-            varying_coils_df = organized_df.loc[(organized_df[coil_name] != organized_df.iloc[0][coil_name]) & (organized_df[ta_config_index_colname] == first_i_ta_config_index)]
-            varying_coils_df = pd.concat([base_coil_row, varying_coils_df])
+        for i_coil_name, coil_name in enumerate(COILS_OF_INTEREST):
+            varying_coils_df = organized_df.loc[(organized_df[coil_name] != organized_df.iloc[0][coil_name]) & (organized_df[ta_config_index_colname] == i_ta_config)]
+            varying_coils_df = pd.concat([base_coil_row, varying_coils_df]) # this is for this ta_config_idnex
+            for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+                truth_values = varying_coils_df[col_name + '_truth']
+                recond_values = varying_coils_df[col_name + '_median']
+                recond_1sigmas = varying_coils_df[col_name + '_1sigma']
 
+                # COULD INTERPOLATE THIS
+                coil_indexes = varying_coils_df.index[(truth_values < recond_values - sigma_range * recond_1sigmas)
+                                                      | (truth_values > recond_values + sigma_range * recond_1sigmas)].tolist()
+                
+                i_data_column = i_col_name + i_coil_name*len(QUERY_COLUMN_NAMES)
 
+                if len(coil_indexes) == 0:
+                    data[i_ta_config, i_data_column] = np.nan # Represents coil range was not large enough to get to point when is oor 
 
+                lowest_failed_coil_index = min(coil_indexes)
+                lowest_failed_coil_value = varying_coils_df.iloc[lowest_failed_coil_index][coil_name]
+        
+                data[i_ta_config, i_data_column] = lowest_failed_coil_value
 
-    return f'truth outside {sigma_range} sigma', row
+    df = pd.DataFrame(data, col_names)
 
-def analyze_ta_config_set_size(organized_df):
-    pass
+    return df
 
-def analyze_df(df):
-    pass
+def plot_truth_outside_sigma_bound(TOSB_df):
+
+    num_columns = 3
+    medians = []
+    fig, axs = plt.subplots(len(COILS_OF_INTEREST), num_columns)
+    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+            vals = TOSB_df['TOSB_' + coil_name + '_' + col_name]
+            medians.append(vals.median())
+            ax.hist(vals, label=col_name, alpha=.5, color=query_column_colors[i_col_name])
+        ax.axvline(x = min(medians), c=query_column_colors[np.argmax(medians)])
+        ax.legend()
+
+def analyze_test_set_size()
 
 if __name__ == '__main__':
