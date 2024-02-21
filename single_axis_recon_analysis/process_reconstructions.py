@@ -45,7 +45,7 @@ def get_df_from_recons(recons_dir, num_expected):
     filenames = []
     for filepath in os.listdir(recons_dir):
         if len(filenames)%100 == 0:
-            print(f'{100*len(filenames)/1000}% processed')
+            print(f'{100*len(filenames)/10000}% processed')
         if pattern.match(filepath):
             i_row += 1
             recon_df = pd.read_csv(os.path.join(recons_dir, filepath))
@@ -147,7 +147,11 @@ def get_truth_outside_sigma_bound(organized_df: pd.DataFrame, sigma_range: float
 
     return df
 
-def plot_truth_outside_sigma_bound(TOSB_df):
+def plot_truth_outside_sigma_bound(TOSB_df, coil_diffs, sigma_range):
+
+    coil_diffs_rounded = coil_diffs.astype('int32')
+
+    ylim = 160
 
     num_columns = 3
     fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
@@ -158,13 +162,16 @@ def plot_truth_outside_sigma_bound(TOSB_df):
         for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
             vals = TOSB_df['TOSB_' + coil_name + '_' + col_name]
             medians.append(vals.median())
-            # ax.hist(vals, label=col_name, histtype='step', color=query_column_colors[i_col_name])
-            ax.hist(vals, label=col_name, alpha = .5, color=query_column_colors[i_col_name])
-        # ax.axvline(x=min(medians), c=query_column_colors[np.argmin(medians)])
-        ax.set_xlabel('Coil Deviation (A)')
+            
+            ax.hist(vals, label=col_name, histtype='step', fill=True, alpha = .5, color=query_column_colors[i_col_name],
+                    bins=coil_diffs - 1, linewidth=2)
+
+        ax.set_xlabel('Coil Increment (A)')
+        ax.set_ylabel('Number of Equilibria where TOSB')
         ax.legend()
         ax.set_title(coil_name)
-    plt.suptitle(f'Truth Outside of Coil Varied Reconstructed $\mu \pm 1\sigma$\nTable D: {TABLE_D_CONFIG}')
+        ax.set_ylim([0, 160])
+    plt.suptitle(f'Truth Outside of Sigma Bound (TOSB) for Coil Varied Reconstructions: {sigma_range}$\sigma$\nTable D: {TABLE_D_CONFIG}')
     plt.show()
 
 def plot_test_set_size_analysis(organized_df: pd.DataFrame):
@@ -198,7 +205,8 @@ def plot_test_set_size_analysis(organized_df: pd.DataFrame):
             ax.plot(num_testcases_per_iteration, vals, label = col_name)
         ax.set_xlabel('Number of testcases')
         ax.set_ylabel('Z Score')
-        ax.legend()
+        legned_loc = 'upper left' if i_i_coil_config != 4 else 'upper right'
+        ax.legend(loc='upper_left')
         ax.set_title(coil_config_names[i_i_coil_config])
 
     plt.suptitle('Validate Test Set Size')
@@ -206,24 +214,46 @@ def plot_test_set_size_analysis(organized_df: pd.DataFrame):
 
     plt.show()
 
+def plot_fq_with_coil_config(organized_df):
+    coil_config_indexes = organized_df['Coil Config Index'].unique()
+    num_configs_per_coil = 10
+
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = 1 + np.arange(i_coil*num_configs_per_coil, (i_coil+1)*num_configs_per_coil)
+        print(coil_config_indexes)
+        fqs = np.empty(len(coil_config_indexes))
+        for i, coil_config_index in enumerate(coil_config_indexes):
+            fqs[i] = organized_df.loc[organized_df['Coil Config Index'] == coil_config_index]['fit_quality'].mean()
+
+        plt.plot(fqs, label=coil_name)
+
+    plt.legend()
+    plt.xlabel('Coil Config Index')
+    plt.ylabel('Mean Recon Fit Quality')
+    plt.show()
+
 if __name__ == '__main__':
     num_expected=9945
 
     plt.style.use('dark_background')
 
-    # recons_df = get_df_from_recons('data/recon_results', num_expected)
+    # recons_df = get_df_from_recons('data/2nd_it_same_densities_recon_results/', num_expected)
     # recons_df.to_csv('data/recon_results.csv')
 
     recons_df = pd.read_csv('data/recon_results.csv')
     recons_df.set_index('FileName', inplace=True)
     organized_df = organize_df(recons_df, 'out_files.pickle', num_expected)
-        
-    # plot_test_set_size_analysis(organized_df)
+    
+    # plot_fq_with_coil_config(organized_df)
+    # # plot_test_set_size_analysis(organized_df)
 
-    # tosb_df = get_truth_outside_sigma_bound(organized_df, sigma_range=1)
+    sigma_range = 1
+
+    tosb_df = get_truth_outside_sigma_bound(organized_df, sigma_range=sigma_range)
     # tosb_df.to_csv('data/tosb_results.csv')
 
-    tosb_df = pd.read_csv('data/tosb_results.csv')
+    # tosb_df = pd.read_csv('data/tosb_results.csv')
 
-    plot_truth_outside_sigma_bound(tosb_df)
+    bins = organized_df['Coil_A'].unique() # only works for now as Coil A is 0 at base
+    plot_truth_outside_sigma_bound(tosb_df, bins, sigma_range)
     breakpoint()
