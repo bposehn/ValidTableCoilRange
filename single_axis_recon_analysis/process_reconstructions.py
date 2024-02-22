@@ -106,6 +106,8 @@ def get_truth_outside_sigma_bound(organized_df: pd.DataFrame, sigma_range: float
 
     data = np.empty((num_ta_configs, len(col_names)))
     
+    slopes = []
+
     # Entry for each table axis config, for each coil, for each col 
     filenames = []
     for i_ta_config in organized_df[ta_config_index_colname].unique():
@@ -143,11 +145,39 @@ def get_truth_outside_sigma_bound(organized_df: pd.DataFrame, sigma_range: float
 
                 data[i_ta_config, i_data_column] = lowest_failed_coil_deviance
     
+    # slopes = np.array(slopes)
+    # breakpoint()
     df = pd.DataFrame(data, columns=col_names)
 
     return df
 
 def plot_truth_outside_sigma_bound(TOSB_df, coil_diffs, sigma_range):
+
+    num_columns = 3
+    fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        medians = []
+        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+            first_flag_coil_values = TOSB_df['TOSB_' + coil_name + '_' + col_name]
+            number_failed_per_coil_diff = []
+            for coil_diff in coil_diffs:
+                number_failed_per_coil_diff.append((first_flag_coil_values < coil_diff + 1).sum())
+            
+            ax.scatter(coil_diffs, number_failed_per_coil_diff, color=query_column_colors[i_col_name], label=col_name)
+
+        ax.set_xlabel('Coil Increment (A)')
+        ax.set_ylabel('Number of Equilibria where TOSB')
+        ax.legend()
+        ax.set_title(coil_name)
+        # ax.set_ylim([0, 160])
+
+    plt.legend()
+    plt.suptitle(f'Truth Outside of Sigma Bound (TOSB) for Coil Varied Reconstructions: {sigma_range}$\sigma$\nTable D: {TABLE_D_CONFIG}')
+    plt.show()
+
+def hist_plot_truth_outside_sigma_bound(TOSB_df, coil_diffs, sigma_range):
 
     coil_diffs_rounded = coil_diffs.astype('int32')
 
@@ -161,11 +191,12 @@ def plot_truth_outside_sigma_bound(TOSB_df, coil_diffs, sigma_range):
         ax = axs[int(i_coil/num_columns), i_coil%num_columns]
         for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
             vals = TOSB_df['TOSB_' + coil_name + '_' + col_name]
-            medians.append(vals.median())
+            medians.append(vals.mean() - 1*vals.std())
             
             ax.hist(vals, label=col_name, histtype='step', fill=True, alpha = .5, color=query_column_colors[i_col_name],
                     bins=coil_diffs - 1, linewidth=2)
 
+        ax.axvline(np.min(medians), color=query_column_colors[np.argmin(medians)], label='Minimum Column Median')
         ax.set_xlabel('Coil Increment (A)')
         ax.set_ylabel('Number of Equilibria where TOSB')
         ax.legend()
@@ -232,6 +263,63 @@ def plot_fq_with_coil_config(organized_df):
     plt.ylabel('Mean Recon Fit Quality')
     plt.show()
 
+def get_sigma_error_data(organized_df):
+    col_names = QUERY_COLUMN_NAMES
+
+    ta_config_index_colname = 'TA Config Index'
+    coil_config_index_colname = 'Coil Config Index'
+
+    num_ta_configs = len(organized_df[ta_config_index_colname].unique())
+    num_coil_configs = len(organized_df[coil_config_index_colname].unique())
+
+    data = np.empty((num_ta_configs, num_coil_configs, len(QUERY_COLUMN_NAMES)))
+    
+    # Entry for each table axis config, for each coil, for each col 
+    for i_ta_config in organized_df[ta_config_index_colname].unique():
+        single_ta_df = organized_df.loc[organized_df[ta_config_index_colname] == i_ta_config]
+        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+            truth_values = single_ta_df[col_name + '_truth']
+            recond_values = single_ta_df[col_name + '_mean']
+            recond_sigmas = single_ta_df[col_name + '_sigma']
+            sigmas_off = abs((truth_values - recond_values) / recond_sigmas)
+            data[i_ta_config, :, i_col_name] = sigmas_off.values
+
+    return data
+
+def plot_sigma_error(data, coil_increments):
+
+    # Data is for each table axis config, for each coil, for each col 
+
+    num_configs_per_coil = 10
+    num_ta_configs = data.shape[0]
+
+    num_columns = 3
+    fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+    
+    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = np.arange(i_coil*num_configs_per_coil, (i_coil+1)*num_configs_per_coil)
+        coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+            ax.scatter(coil_increments, np.nanmean(data[:, coil_config_indexes, i_col_name], 0), label=col_name, color=query_column_colors[i_col_name], alpha=0.5)
+
+        # look into why go down for some sigma? 
+
+            # for i_ta_config_index in range(num_ta_configs):
+            #     if i_ta_config_index == 0:
+            #         ax.scatter(coil_increments, data[i_ta_config_index, coil_config_indexes, i_col_name], label=col_name, color=query_column_colors[i_col_name], alpha=0.5)
+            #     else:
+            #         ax.scatter(coil_increments, data[i_ta_config_index, coil_config_indexes, i_col_name], color=query_column_colors[i_col_name], alpha=0.5)
+
+        ax.set_xlabel('Coil Increment (A)')
+        ax.set_ylabel('(Truth - $\mu_{Recon}$) \ $\sigma_{Recon}$')
+        ax.legend()
+        ax.set_title(coil_name)
+        # ax.set_ylim([0, 160])
+    plt.suptitle(f'eeee\nTable D: {TABLE_D_CONFIG}')
+    plt.show()
+
 if __name__ == '__main__':
     num_expected=9945
 
@@ -243,17 +331,23 @@ if __name__ == '__main__':
     recons_df = pd.read_csv('data/recon_results.csv')
     recons_df.set_index('FileName', inplace=True)
     organized_df = organize_df(recons_df, 'out_files.pickle', num_expected)
-    
+    coil_increments = organized_df['Coil_A'].unique() # only works for now as Coil A is 0 at base
+
+    # is ta, coil, col
+    data = get_sigma_error_data(organized_df)
+    plot_sigma_error(data, coil_increments)
+    breakpoint()
+
     # plot_fq_with_coil_config(organized_df)
     # # plot_test_set_size_analysis(organized_df)
 
-    sigma_range = 1
+    # sigma_range = 1
 
-    tosb_df = get_truth_outside_sigma_bound(organized_df, sigma_range=sigma_range)
-    # tosb_df.to_csv('data/tosb_results.csv')
+    # tosb_df = get_truth_outside_sigma_bound(organized_df, sigma_range=sigma_range)
 
-    # tosb_df = pd.read_csv('data/tosb_results.csv')
+    # tosb_df.to_csv('data/tosb_1sig_results.csv')
 
-    bins = organized_df['Coil_A'].unique() # only works for now as Coil A is 0 at base
-    plot_truth_outside_sigma_bound(tosb_df, bins, sigma_range)
-    breakpoint()
+    # # tosb_df = pd.read_csv('data/tosb_results.csv')
+
+    # plot_truth_outside_sigma_bound(tosb_df, bins, sigma_range)
+    # breakpoint()
