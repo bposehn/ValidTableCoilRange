@@ -37,7 +37,7 @@ def get_df_from_recons(recons_dir, num_expected):
     for query_column_name in QUERY_COLUMN_NAMES:
         df_column_names += [query_column_name + suffix for suffix in suffixes]
 
-    other_recon_output_names = ['fit_quality']
+    other_recon_output_names = ['fit_quality', 'rxpt_truth']
     data = np.empty((num_expected, len(df_column_names)+len(other_recon_output_names)))
 
     pattern = re.compile("^testcase_[0-9]+_[1-5].csv")
@@ -359,7 +359,7 @@ def plot_sigma_error(data, coil_increments):
     plt.suptitle('$\sigma$ Deviance = (Truth - $\mu_{Recon}$) / $\sigma_{Recon}$' + f'\nTable D: {TABLE_D_CONFIG}')
     plt.show()
 
-def plot_normalized_sigma_error(data, coil_increments, organized_df):
+def plot_normalized_limited_diverted_sigma_error(data, coil_increments, organized_df):
 
     # Data is for each table axis config, for each coil, for each col 
 
@@ -374,64 +374,197 @@ def plot_normalized_sigma_error(data, coil_increments, organized_df):
     for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
         coil_config_indexes = np.arange(i_coil*num_configs_per_coil + 1, (i_coil+1)*num_configs_per_coil + 1)
         coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
-        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
-        ax2 = ax.twinx()
-        coil_config_df = organized_df.loc[organized_df['Coil Config Index'].isin(coil_config_indexes)]
-        fqs = []
-        for i_coil_config_index in coil_config_df['Coil Config Index'].unique():
-            fqs.append(np.mean(coil_config_df.loc[coil_config_df['Coil Config Index'] == i_coil_config_index]['fit_quality']))
 
-        ax2.plot(coil_increments, fqs, label = 'Mean Fit Quality', c='m')
+        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+
+        df_at_coils = organized_df.loc[organized_df['Coil Config Index'].isin(coil_config_indexes)]
+        limited_ta_config_indexes = set(df_at_coils.loc[df_at_coils['rxpt_truth'] == 0]['TA Config Index'].unique())
+        diverted_ta_config_indexes = set(np.arange(len(df_at_coils['TA Config Index'].unique()))) - limited_ta_config_indexes
+
+        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+
+            for indexes, state, marker in zip([list(limited_ta_config_indexes), list(diverted_ta_config_indexes)], ['Limited', 'Diverted'], ['o', 'x']):
+                base_coil_config_mean_sigma_deviance = np.nanmean(data[indexes, 0, i_col_name])
+                ys = np.empty()
+                yerrs = []
+                for index in indexes:
+                    ys.append(data[index, coil_config_indexes, i_col_name])
+                    yerrs.append(data[index, coil_config_indexes, i_col_name])
+
+                ax.errorbar(coil_increments - i_col_name*.8, abs(base_coil_config_mean_sigma_deviance - np.nanmean(data[indexes, coil_config_indexes, i_col_name], 0)),
+                            yerr=np.nanstd(data[indexes, coil_config_indexes, i_col_name], 0),
+                            label=col_name + ' abs(Base Coils Mean - Mean) ' + state, color=query_column_colors[i_col_name], marker=marker)
+
+        ax.set_xlabel('Coil Increment (A)')
+        ax.set_ylabel('$\sigma$ Deviance')
+        ax.set_title(coil_name)
+
+        if coil_name == 'PFC_1':
+            ax.set_ylim([0, 2.5])
+
+        if coil_name == 'PFC_2':
+            ax.set_ylim([0, 10])
+
+    handles_ax1, labels_ax1 = ax.get_legend_handles_labels()
+
+    last_ax = axs[-1, -1]
+    last_ax.axis('off')
+    last_ax.legend(handles_ax1, labels_ax1)
+    plt.suptitle('$\sigma$ Deviance = (Truth - $\mu_{Recon}$) / $\sigma_{Recon}$' + f'\nTable D: {TABLE_D_CONFIG}')
+    plt.show()
+
+def plot_normalized_sigma_error_quantiles(data, coil_increments, organized_df, plot_fit_qualities=False):
+
+    # Data is for each table axis config, for each coil, for each col 
+
+    num_configs_per_coil = 10
+    num_ta_configs = data.shape[0]
+
+    num_columns = 3
+    fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+    fig.subplots_adjust(wspace=.4)
+
+    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = np.arange(i_coil*num_configs_per_coil + 1, (i_coil+1)*num_configs_per_coil + 1)
+        coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+
+        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+        if plot_fit_qualities:
+            ax2 = ax.twinx()
+            coil_config_df = organized_df.loc[organized_df['Coil Config Index'].isin(coil_config_indexes)]
+            fqs = []
+            for i_coil_config_index in coil_config_df['Coil Config Index'].unique():
+                fqs.append(np.mean(coil_config_df.loc[coil_config_df['Coil Config Index'] == i_coil_config_index]['fit_quality']))
+
+            ax2.plot(coil_increments, fqs, label = 'Mean Fit Quality', c='m')
+            if max(fqs) > 2*fqs[0]:
+                ax2.axhline(fqs[0]*2, label='2 * Base Coil Config Fit Quality', c='m', linestyle='dashed')
+
+        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
+            sigma_deviance_changes = abs(data[:, coil_config_indexes, i_col_name] - data[:, 0, i_col_name][:, np.newaxis])
+            quantiles = [0.1, 0.5, .9]
+            for quantile, marker in zip(quantiles, ['s', 'o', '+']):
+                ax.plot(coil_increments, np.nanquantile(sigma_deviance_changes, quantile, axis=0),
+                        label=col_name + f' Quantile(abs(Incremented - Base), {quantile*100}%)', color=query_column_colors[i_col_name], marker=marker)
+
+            # normd_base_coil_config_mean_sigma_deviance = np.nanmedian(data[:, 0, i_col_name])
+
+            # quantiles = [0.1, 0.5, .9]
+            # normd_sigma_deviances_at_coil_configs = abs(normd_base_coil_config_mean_sigma_deviance - normd_base_coil_config_mean_sigma_deviance - data[:, coil_config_indexes, i_col_name])
+            # for quantile, marker in zip(quantiles, ['s', 'o', '+']):
+            #     ax.plot(coil_increments, np.nanquantile(normd_sigma_deviances_at_coil_configs, quantile, axis=0),
+            #             label=col_name + f' Quantile(abs(Base Coils Median - All Coils), {quantile*100}%)', color=query_column_colors[i_col_name], marker=marker)
+
+        ax.set_xlabel('Coil Increment (A)')
+        ax.set_ylabel('$\sigma$ Deviance')
+        ax.set_title(coil_name)
+
+        if plot_fit_qualities:
+            ax2.set_ylabel('Fit Quality', c='m')
+
+    handles_ax1, labels_ax1 = ax.get_legend_handles_labels()
+    if plot_fit_qualities:
+        handles_ax2, labels_ax2 = ax2.get_legend_handles_labels()
+    else:
+        handles_ax2, labels_ax2 = [], []
+
+    last_ax = axs[-1, -1]
+    last_ax.axis('off')
+    last_ax.legend(handles_ax1+handles_ax2, labels_ax1+labels_ax2)
+    plt.suptitle('Testcase-Wise $\sigma$ Deviance = (Truth - $\mu_{Recon}$) / $\sigma_{Recon}$' + f'\nTable D: {TABLE_D_CONFIG}')
+    plt.show()
+
+def plot_normalized_sigma_error(data, coil_increments, organized_df, plot_fit_qualities=False):
+
+    # Data is for each table axis config, for each coil, for each col 
+
+    num_configs_per_coil = 10
+    num_ta_configs = data.shape[0]
+
+    num_columns = 3
+    fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+    fig.subplots_adjust(wspace=.4)
+
+    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = np.arange(i_coil*num_configs_per_coil + 1, (i_coil+1)*num_configs_per_coil + 1)
+        coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+
+        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+        if plot_fit_qualities:
+            ax2 = ax.twinx()
+            coil_config_df = organized_df.loc[organized_df['Coil Config Index'].isin(coil_config_indexes)]
+            fqs = []
+            for i_coil_config_index in coil_config_df['Coil Config Index'].unique():
+                fqs.append(np.mean(coil_config_df.loc[coil_config_df['Coil Config Index'] == i_coil_config_index]['fit_quality']))
+
+            ax2.plot(coil_increments, fqs, label = 'Mean Fit Quality', c='m')
+            if max(fqs) > 2*fqs[0]:
+                ax2.axhline(fqs[0]*2, label='2 * Base Coil Config Fit Quality', c='m', linestyle='dashed')
 
         for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
             base_coil_config_mean_sigma_deviance = np.nanmean(data[:, 0, i_col_name])
+
+            # ax.plot(coil_increments, abs(base_coil_config_mean_sigma_deviance - np.nanmean(data[:, coil_config_indexes, i_col_name], 0)),
+            #         label=col_name + ' abs(Base Coils Mean - Mean)', color=query_column_colors[i_col_name], marker='o')
+
             ax.errorbar(coil_increments - i_col_name*.8, abs(base_coil_config_mean_sigma_deviance - np.nanmean(data[:, coil_config_indexes, i_col_name], 0)),
                         yerr=np.nanstd(data[:, coil_config_indexes, i_col_name], 0), label=col_name + ' abs(Base Coils Mean - Mean)', color=query_column_colors[i_col_name], marker='o')
 
         ax.set_xlabel('Coil Increment (A)')
         ax.set_ylabel('$\sigma$ Deviance')
         ax.set_title(coil_name)
-        ax2.set_ylabel('Fit Quality')
-        # ax.set_ylim([0, 160])
+
+        if coil_name == 'PFC_1':
+            ax.set_ylim([0, 2.5])
+
+        if coil_name == 'PFC_2':
+            ax.set_ylim([0, 10])
+
+        ax2.set_ylabel('Fit Quality', c='m')
+
     handles_ax1, labels_ax1 = ax.get_legend_handles_labels()
-    handles_ax2, labels_ax2 = ax2.get_legend_handles_labels()
+    if plot_fit_qualities:
+        handles_ax2, labels_ax2 = ax2.get_legend_handles_labels()
+    else:
+        handles_ax2, labels_ax2 = [], []
+
     last_ax = axs[-1, -1]
+    last_ax.axis('off')
     last_ax.legend(handles_ax1+handles_ax2, labels_ax1+labels_ax2)
     plt.suptitle('$\sigma$ Deviance = (Truth - $\mu_{Recon}$) / $\sigma_{Recon}$' + f'\nTable D: {TABLE_D_CONFIG}')
     plt.show()
 
-def analyze_blip(organized_df):
-    col_of_interest = 'NevinsC'
-    organized_df[f'{col_of_interest}_sigma_dev'] = (organized_df[f'{col_of_interest}_truth'] - organized_df[f'{col_of_interest}_mean']) / organized_df[f'{col_of_interest}_sigma']
-    i_coils = organized_df['Coil Config Index'].unique()
-    coil_vals = []
-    for i_coil in i_coils:
-        all_tas_vals = organized_df.loc[organized_df['Coil Config Index'] == i_coil][f'{col_of_interest}_sigma_dev']
-        coil_vals.append(np.nanmean(all_tas_vals))
+def plot_fqs(organized_df, coil_increments):
 
-    plt.plot(i_coils, coil_vals)
-    for i in range(1, 5):
-        plt.axvline(i*10)
+    # Data is for each table axis config, for each coil, for each col 
+    num_configs_per_coil = 10
+
+    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = np.arange(i_coil*num_configs_per_coil + 1, (i_coil+1)*num_configs_per_coil + 1)
+        coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+        coil_config_df = organized_df.loc[organized_df['Coil Config Index'].isin(coil_config_indexes)]
+        fqs = []
+        for i_coil_config_index in coil_config_df['Coil Config Index'].unique():
+            fqs.append(np.mean(coil_config_df.loc[coil_config_df['Coil Config Index'] == i_coil_config_index]['fit_quality']))
+        plt.plot(coil_increments, fqs, label = coil_name)
+
+    plt.legend()
+    plt.xlabel('Coil Increment (A)')
+    plt.ylabel('Fit Quality')
     plt.show()
 
-def analyze_blip_data(data):
-    vals = []
-    nevins_c_col_index = 2
-    for i in range(51):
-        vals.append(np.nanmean(data[:, i, nevins_c_col_index]))
-
-    for i in range(1, 5):
-        plt.axvline(i*10)
-    
-    plt.show()
+# def get_sigma_deviance_slopes()
 
 if __name__ == '__main__':
     num_expected=9945
 
     plt.style.use('dark_background')
 
-    # recons_df = get_df_from_recons('data/2nd_it_same_densities_recon_results/', num_expected)
-    # recons_df.to_csv('data/recon_results.csv')
+    recons_df = get_df_from_recons('data/2nd_it_same_densities_recon_results/', num_expected)
+    recons_df.to_csv('data/recon_results_al.csv')
 
     recons_df = pd.read_csv('data/recon_results.csv')
     recons_df.set_index('FileName', inplace=True)
@@ -442,22 +575,10 @@ if __name__ == '__main__':
 
     # is ta, coil, col
     data = get_sigma_error_data(organized_df)
+    # plot_fqs(organized_df, coil_increments)
 
     # plot_sigma_deviance_test_set_size_analysis(data)
     # plot_sigma_error(data, coil_increments)
-    plot_normalized_sigma_error(data, coil_increments, organized_df)
+    plot_normalized_sigma_error_quantiles(data, coil_increments, organized_df, plot_fit_qualities=False)
+    # plot_normalized_limited_diverted_sigma_error(data, coil_increments, organized_df)
     # plot_sigma_error(data, coil_increments)
-
-    # plot_fq_with_coil_config(organized_df)
-    # # plot_test_set_size_analysis(organized_df)
-
-    # sigma_range = 1
-
-    # tosb_df = get_truth_outside_sigma_bound(organized_df, sigma_range=sigma_range)
-
-    # tosb_df.to_csv('data/tosb_1sig_results.csv')
-
-    # # tosb_df = pd.read_csv('data/tosb_results.csv')
-
-    # plot_truth_outside_sigma_bound(tosb_df, bins, sigma_range)
-    # breakpoint()
