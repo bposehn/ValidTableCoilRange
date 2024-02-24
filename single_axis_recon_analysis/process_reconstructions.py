@@ -21,6 +21,10 @@ TABLE_D_CONFIG = {  'Coil_A': 0,
                     'PFC_1': -154.3,
                     'PFC_2': -42.5}
 
+COIL_CONFIG_INDEX_NAME = 'Coil Config Index'
+TA_CONFIG_INDEX_NAME = 'TA Config Index'
+NUM_CONFIGS_PER_COIL = 10
+
 def get_coils_from_filename(filename, coil_names):
     coils = {}
     for coil_name in coil_names:
@@ -30,6 +34,23 @@ def get_coils_from_filename(filename, coil_names):
         coils[coil_name] = float(filename[end_coil_name:end_number])
     
     return coils
+
+def get_all_columns_df_from_recons(recons_dir):   
+
+    for i_filepath, filepath in enumerate(os.listdir(recons_dir)):
+        if i_filepath%100 == 0:
+            print(f'{100*i_filepath/10000}% processed')
+
+        recon_df = pd.read_csv(os.path.join(recons_dir, filepath))
+
+        if i_filepath == 0:
+            df = recon_df
+        else:
+            df = pd.concat((df, recon_df), ignore_index=True)
+
+    return df
+
+
 
 def get_df_from_recons(recons_dir, num_expected):   
     suffixes = ['_mean', '_truth', '_sigma']
@@ -556,29 +577,122 @@ def plot_fqs(organized_df, coil_increments):
     plt.ylabel('Fit Quality')
     plt.show()
 
-# def get_sigma_deviance_slopes()
+def get_sigma_deviance_df(organized_df):
+    cols_of_interest = []
+    for col in organized_df.columns:
+        if col.endswith('_truth'):
+            cols_of_interest.append(col[:-6])
+
+    sigma_deviance_df = pd.DataFrame()
+    sigma_deviance_df[COIL_CONFIG_INDEX_NAME] = organized_df[COIL_CONFIG_INDEX_NAME]
+    sigma_deviance_df[TA_CONFIG_INDEX_NAME] = organized_df[TA_CONFIG_INDEX_NAME]
+    for col in cols_of_interest:
+        sigma_deviance_df[col] = ((organized_df[col + '_truth'] - organized_df[col + '_mean']) / organized_df[col + '_sigma'])
+
+    return sigma_deviance_df
+
+def get_all_cols_sigma_error_data(organized_df):
+    cols_of_interest = []
+    for col in organized_df.columns:
+        if col.endswith('_truth'):
+            cols_of_interest.append(col[:-6])
+
+    num_ta_configs = len(organized_df[TA_CONFIG_INDEX_NAME].unique())
+    num_coil_configs = len(organized_df[COIL_CONFIG_INDEX_NAME].unique())
+
+    data = np.empty((num_ta_configs, num_coil_configs, len(cols_of_interest)))
+    
+    # Entry for each table axis config, for each coil, for each col sigmas off
+    for i_ta_config in organized_df[TA_CONFIG_INDEX_NAME].unique():
+        single_ta_df = organized_df.loc[organized_df[TA_CONFIG_INDEX_NAME] == i_ta_config]
+        for i_col_name, col_name in enumerate(cols_of_interest):
+            truth_values = single_ta_df[col_name + '_truth']
+            recond_values = single_ta_df[col_name + '_mean']
+            recond_sigmas = single_ta_df[col_name + '_sigma']
+            sigmas_off = ((truth_values - recond_values) / recond_sigmas)
+            sigmas_off.where(recond_sigmas > 1e-6, np.nan, inplace=True) # TODO is this valid? 
+            data[i_ta_config, :, i_col_name] = sigmas_off.values
+
+    return data, cols_of_interest
+
+def get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments):
+
+    # slope, residual, last index before 90% quartile greater than 1 
+    UPPER_QUANTILE_VALUE = .90
+    SIGMA_DEVIANCE_THRESHOLD = 1
+    normd_sigma_deviance_slopes = np.empty((len(cols_of_interest), 3*len(COILS_OF_INTEREST)))
+
+    base_deviances = sigma_deviance_arr[:, 0, :]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = np.arange(i_coil*NUM_CONFIGS_PER_COIL + 1, (i_coil+1)*NUM_CONFIGS_PER_COIL + 1)
+        coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+
+        deviance_values_along_coil = sigma_deviance_arr[:, coil_config_indexes, :]
+        normd_deviances_along_coil = abs(deviance_values_along_coil - base_deviances[:, np.newaxis])
+
+        upper_quantile_contours = np.nanquantile(normd_deviances_along_coil, UPPER_QUANTILE_VALUE, 0)
+        for i_col, col in enumerate(cols_of_interest):
+            col_upper_quantile_contour = upper_quantile_contours[:, i_col]
+            masked_col_upper_quantile_contour = np.ma.masked_invalid(col_upper_quantile_contour)
+            nonnan_mask = np.logical_not(np.isnan(col_upper_quantile_contour))
+
+            # Deal w nans
+            if np.max(masked_col_upper_quantile_contour) < SIGMA_DEVIANCE_THRESHOLD:
+                last_idx = len(col_upper_quantile_contour) - 1
+            elif col_upper_quantile_contour[1] > SIGMA_DEVIANCE_THRESHOLD or nonnan_mask.sum() == 0:
+                #First point violates threshold, can't make slope or all nans
+                normd_sigma_deviance_slopes[i_col, 3*i_coil] = np.nan
+                normd_sigma_deviance_slopes[i_col, 3*i_coil + 1] = np.nan
+                normd_sigma_deviance_slopes[i_col, 3*i_coil + 2] = np.nan
+                continue
+            else:
+                last_idx = np.argmax(masked_col_upper_quantile_contour > 1) - 1
+
+            coeffs, residual, _, _, _  = np.polyfit(coil_increments[nonnan_mask][:last_idx+1], col_upper_quantile_contour[nonnan_mask][:last_idx+1], 1, full=True)
+
+            normd_sigma_deviance_slopes[i_col, 3*i_coil] = coeffs[0]
+            normd_sigma_deviance_slopes[i_col, 3*i_coil + 1] = residual if not len(residual) == 0 else 0 # Residual is empty if just two points
+            normd_sigma_deviance_slopes[i_col, 3*i_coil + 2] = coil_increments[last_idx]
+
+    colnames = []
+    for coil_name in COILS_OF_INTEREST:
+        colnames += [coil_name + descriptor for descriptor in [' Slope', ' Residual', ' Coil Increment at Threshold']]
+
+    df = pd.DataFrame(normd_sigma_deviance_slopes, columns=colnames)
+    df['Column'] = cols_of_interest
+    df.set_index('Column', inplace=True)
+    breakpoint()
+    return df
 
 if __name__ == '__main__':
     num_expected=9945
 
     plt.style.use('dark_background')
 
-    recons_df = get_df_from_recons('data/2nd_it_same_densities_recon_results/', num_expected)
-    recons_df.to_csv('data/recon_results_al.csv')
+    # recons_df = get_df_from_recons('data/2nd_it_same_densities_recon_results/', num_expected)
+    # recons_df = get_all_columns_df_from_recons('data/2nd_it_same_densities_recon_results/')
+    # recons_df.to_csv('data/recon_results_all_cols.csv')
 
-    recons_df = pd.read_csv('data/recon_results.csv')
-    recons_df.set_index('FileName', inplace=True)
-    organized_df = organize_df(recons_df, 'out_files.pickle', num_expected)
+    # recons_df = pd.read_csv('data/recon_results_all_cols.csv')
+    # recons_df.set_index('FileName', inplace=True)
+    # organized_df = organize_df(recons_df, 'out_files.pickle', num_expected)
+
+    # organized_df.to_csv('data/organized_df_all_cols.csv')
+    organized_df = pd.read_csv('data/organized_df_all_cols.csv')
     coil_increments = organized_df['Coil_A'].unique() # only works for now as Coil A is 0 at base
 
-    # analyze_blip(organized_df)
+    # sigma_deviance_arr, cols_of_interest = get_all_cols_sigma_error_data(organized_df)
+    # np.save('data/sigma_deviance_arr', sigma_deviance_arr)
 
-    # is ta, coil, col
-    data = get_sigma_error_data(organized_df)
-    # plot_fqs(organized_df, coil_increments)
+    sigma_deviance_arr = np.load('data/sigma_deviance_arr.npy')
 
-    # plot_sigma_deviance_test_set_size_analysis(data)
-    # plot_sigma_error(data, coil_increments)
-    plot_normalized_sigma_error_quantiles(data, coil_increments, organized_df, plot_fit_qualities=False)
-    # plot_normalized_limited_diverted_sigma_error(data, coil_increments, organized_df)
-    # plot_sigma_error(data, coil_increments)
+    cols_of_interest = []
+    for col in organized_df.columns:
+        if col.endswith('_truth'):
+            cols_of_interest.append(col[:-6])
+
+    sigma_deviance_slopes = get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
+
+    # # is ta, coil, col
+    # data = get_sigma_error_data(organized_df)
+    # plot_normalized_sigma_error_quantiles(data, coil_increments, organized_df, plot_fit_qualities=False)
