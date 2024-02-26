@@ -615,6 +615,82 @@ def get_all_cols_sigma_error_data(organized_df):
 
     return data, cols_of_interest
 
+def plot_all_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments):
+    profile_bases = []
+    for col in cols_of_interest:
+        if col.endswith('015'):
+            profile_bases.append(col[:-3])
+
+    plotted_cols = set()
+    # First plot profiles
+
+    num_columns = 3
+
+    num_colors = 21
+    cm = plt.get_cmap('gist_rainbow')
+    colors=[cm(1.*i/num_colors) for i in range(num_colors)]
+
+    linestyles = ['solid', 'dotted', 'dashed']
+
+    # Data is for each table axis config, for each coil, for each col 
+    for profile_base in profile_bases:
+        fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+        fig.set_figheight(10)
+        fig.set_figwidth(14)
+        fig.subplots_adjust(wspace=.4)
+        for i_psibar_val, psibar_val in enumerate(np.linspace(0, 100, 21, dtype=int)):
+            colname = profile_base + str(psibar_val).zfill(3)
+            if colname not in cols_of_interest:
+                print(f'{colname} not found')
+                continue
+            i_colname = cols_of_interest.index(colname)
+            plotted_cols.add(colname)
+            for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+                coil_config_indexes = np.arange(i_coil*NUM_CONFIGS_PER_COIL + 1, (i_coil+1)*NUM_CONFIGS_PER_COIL + 1)
+                coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+                ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+                ax.plot(coil_increments, np.nanquantile(sigma_deviance_arr[:, coil_config_indexes, i_colname], .90, 0), label=colname, color=colors[i_psibar_val], linestyle=linestyles[i_psibar_val%3])
+                ax.set_xlabel('Coil Increment (A)')
+                ax.set_ylabel('$\sigma$ Deviance')
+                ax.set_title(coil_name)
+        plt.suptitle(f'90% Quantile Curves\nTable D: {TABLE_D_CONFIG}')
+        handles, labels = ax.get_legend_handles_labels()
+        last_ax = axs[-1, -1]
+        last_ax.axis('off')
+        last_ax.legend(handles, labels)
+        plt.savefig(f'plots/all_column_quantiles/{profile_base}.png')
+        plt.clf()
+
+    # TODO order by worst ? 
+
+    unplotted_cols = list(set(cols_of_interest) - plotted_cols)
+    i_unplotted_cols = 0
+    num_at_once = 20
+    while(i_unplotted_cols < len(unplotted_cols)):
+        fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+        fig.set_figheight(10)
+        fig.set_figwidth(14)
+        fig.subplots_adjust(wspace=.4)
+        cols_to_plot = unplotted_cols[i_unplotted_cols:i_unplotted_cols + num_at_once]
+        i_unplotted_cols += num_at_once
+        for colname_i, colname in enumerate(cols_to_plot):
+            i_colname = cols_of_interest.index(colname)
+            for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+                coil_config_indexes = np.arange(i_coil*NUM_CONFIGS_PER_COIL + 1, (i_coil+1)*NUM_CONFIGS_PER_COIL + 1)
+                coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+                ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+                ax.plot(coil_increments, np.nanquantile(sigma_deviance_arr[:, coil_config_indexes, i_colname], .90, 0), label=colname, color=colors[colname_i], linestyle=linestyles[colname_i%3])
+                ax.set_xlabel('Coil Increment (A)')
+                ax.set_ylabel('$\sigma$ Deviance')
+                ax.set_title(coil_name)
+        plt.suptitle(f'90% Quantile Curves\nTable D: {TABLE_D_CONFIG}')
+        handles, labels = ax.get_legend_handles_labels()
+        last_ax = axs[-1, -1]
+        last_ax.axis('off')
+        last_ax.legend(handles, labels)
+        plt.savefig(f'plots/all_column_quantiles/{int(i_unplotted_cols/num_at_once)}.png')
+        plt.clf()
+
 def get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments):
 
     # slope, residual, last index before 90% quartile greater than 1 
@@ -691,7 +767,12 @@ if __name__ == '__main__':
         if col.endswith('_truth'):
             cols_of_interest.append(col[:-6])
 
-    sigma_deviance_slopes = get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
+    breakpoint()
+
+    plot_all_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
+    # sigma_deviance_slopes = get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
+
+    breakpoint()
 
     # # is ta, coil, col
     # data = get_sigma_error_data(organized_df)
