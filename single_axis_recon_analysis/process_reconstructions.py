@@ -50,8 +50,6 @@ def get_all_columns_df_from_recons(recons_dir):
 
     return df
 
-
-
 def get_df_from_recons(recons_dir, num_expected):   
     suffixes = ['_mean', '_truth', '_sigma']
     df_column_names = []
@@ -114,117 +112,6 @@ def organize_df(recon_df: pd.DataFrame, out_filenames_pickle_path, num_expected)
     organized_df = organized_df.astype({'Coil Config Index': 'int32', 'TA Config Index': 'int32'})
 
     return organized_df
-
-def get_truth_outside_sigma_bound(organized_df: pd.DataFrame, sigma_range: float):
-
-    col_type = 'TOSB'
-    col_descriptors = [prod[0] + '_' + prod[1] for prod in itertools.product(COILS_OF_INTEREST, QUERY_COLUMN_NAMES)]
-    col_names = [col_type + '_' + descriptor for descriptor in col_descriptors]
-
-    ta_config_index_colname = 'TA Config Index'
-
-    num_ta_configs = len(organized_df[ta_config_index_colname].unique())
-
-    data = np.empty((num_ta_configs, len(col_names)))
-    
-    slopes = []
-
-    # Entry for each table axis config, for each coil, for each col 
-    filenames = []
-    for i_ta_config in organized_df[ta_config_index_colname].unique():
-        first_i_ta_config_index = organized_df.where(organized_df[ta_config_index_colname] == i_ta_config).first_valid_index()
-        filenames.append(organized_df.iloc[first_i_ta_config_index]['FileName'])
-        base_coil_row = pd.DataFrame(data = [organized_df.iloc[first_i_ta_config_index]], columns = organized_df.columns)
-        for i_coil_name, coil_name in enumerate(COILS_OF_INTEREST):
-            varying_coils_df = organized_df.loc[(organized_df[coil_name] != organized_df.iloc[0][coil_name]) & (organized_df[ta_config_index_colname] == i_ta_config)]
-            varying_coils_df = pd.concat([base_coil_row, varying_coils_df]) # this is for this ta_config_idnex
-            for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
-                truth_values = varying_coils_df[col_name + '_truth']
-                recond_values = varying_coils_df[col_name + '_mean']
-                recond_sigmas = varying_coils_df[col_name + '_sigma']
-
-                # z_scores = abs((truth_values - recond_values) / recond_sigmas).to_numpy()
-                # z_scores = z_scores[~np.isnan(z_scores)]
-                # b, m = np.polyfit(range(len(z_scores)), z_scores, 1)
-                # slopes.append(m)
-
-                # should also add checking that each one after does (i.e not just a middle coil point, that is concerning)
-
-                # COULD INTERPOLATE THIS ? 
-                osb_rows = varying_coils_df.loc[(truth_values < recond_values - sigma_range * recond_sigmas)
-                                                      | (truth_values > recond_values + sigma_range * recond_sigmas)]
-                
-                i_data_column = i_col_name + i_coil_name*len(QUERY_COLUMN_NAMES)
-
-                if len(osb_rows) == 0:
-                    data[i_ta_config, i_data_column] = np.nan # Represents coil range was not large enough to get to point when is oor 
-                    continue
-
-                lowest_failed_coil_index = min(osb_rows['Coil Config Index'])
-                lowest_failed_coil_deviance = varying_coils_df.loc[varying_coils_df['Coil Config Index'] == lowest_failed_coil_index][coil_name] \
-                                                - organized_df.iloc[0][coil_name]
-
-                data[i_ta_config, i_data_column] = lowest_failed_coil_deviance
-    
-    # slopes = np.array(slopes)
-    # breakpoint()
-    df = pd.DataFrame(data, columns=col_names)
-
-    return df
-
-def plot_truth_outside_sigma_bound(TOSB_df, coil_diffs, sigma_range):
-
-    num_columns = 3
-    fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
-    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
-    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
-        medians = []
-        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
-        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
-            first_flag_coil_values = TOSB_df['TOSB_' + coil_name + '_' + col_name]
-            number_failed_per_coil_diff = []
-            for coil_diff in coil_diffs:
-                number_failed_per_coil_diff.append((first_flag_coil_values < coil_diff + 1).sum())
-            
-            ax.scatter(coil_diffs, number_failed_per_coil_diff, color=query_column_colors[i_col_name], label=col_name)
-
-        ax.set_xlabel('Coil Increment (A)')
-        ax.set_ylabel('Number of Equilibria where TOSB')
-        ax.legend()
-        ax.set_title(coil_name)
-        # ax.set_ylim([0, 160])
-
-    plt.legend()
-    plt.suptitle(f'Truth Outside of Sigma Bound (TOSB) for Coil Varied Reconstructions: {sigma_range}$\sigma$\nTable D: {TABLE_D_CONFIG}')
-    plt.show()
-
-def hist_plot_truth_outside_sigma_bound(TOSB_df, coil_diffs, sigma_range):
-
-    coil_diffs_rounded = coil_diffs.astype('int32')
-
-    ylim = 160
-
-    num_columns = 3
-    fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
-    query_column_colors = list(mcolors.BASE_COLORS.keys())[:len(QUERY_COLUMN_NAMES)]
-    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
-        medians = []
-        ax = axs[int(i_coil/num_columns), i_coil%num_columns]
-        for i_col_name, col_name in enumerate(QUERY_COLUMN_NAMES):
-            vals = TOSB_df['TOSB_' + coil_name + '_' + col_name]
-            medians.append(vals.mean() - 1*vals.std())
-            
-            ax.hist(vals, label=col_name, histtype='step', fill=True, alpha = .5, color=query_column_colors[i_col_name],
-                    bins=coil_diffs - 1, linewidth=2)
-
-        ax.axvline(np.min(medians), color=query_column_colors[np.argmin(medians)], label='Minimum Column Median')
-        ax.set_xlabel('Coil Increment (A)')
-        ax.set_ylabel('Number of Equilibria where TOSB')
-        ax.legend()
-        ax.set_title(coil_name)
-        ax.set_ylim([0, 160])
-    plt.suptitle(f'Truth Outside of Sigma Bound (TOSB) for Coil Varied Reconstructions: {sigma_range}$\sigma$\nTable D: {TABLE_D_CONFIG}')
-    plt.show()
 
 def plot_test_set_size_analysis(organized_df: pd.DataFrame):
     #for each coil, for each col, show that avg error reaches asymptote
@@ -737,8 +624,53 @@ def get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_i
     df = pd.DataFrame(normd_sigma_deviance_slopes, columns=colnames)
     df['Column'] = cols_of_interest
     df.set_index('Column', inplace=True)
-    breakpoint()
     return df
+
+def visualize_sigma_deviance_slopes(sigma_deviance_slopes, coil_increments):
+    # Hist of slopes
+    num_columns = 3
+
+    column_types = [' Slope', ' Residual', ' Coil Increment at Threshold']
+    x_axes = ['Sigma Deviance per A', 'Linear Fit Error', 'Coil Increment']
+    titles = ['Sigma Deviance Slope', 'Linear Fit Error', 'Coil Increment before 1sig Threshold']
+
+    for descriptor, x_axis_descriptor, title in zip(column_types, x_axes, titles):
+        fig, axs = plt.subplots(int(np.ceil(len(COILS_OF_INTEREST)/num_columns)), num_columns)
+        fig.set_figheight(10)
+        fig.set_figwidth(14)
+        fig.subplots_adjust(wspace=.4)
+        for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+            ax = axs[int(i_coil/num_columns), i_coil%num_columns]
+            if x_axis_descriptor == 'Coil Increment at Threshold':
+                ax.hist(sigma_deviance_slopes[coil_name + descriptor], bins=coil_increments)
+            else:
+                ax.hist(sigma_deviance_slopes[coil_name + descriptor], bins=20)
+            ax.set_title(coil_name)
+            ax.set_xlabel(x_axis_descriptor)
+            ax.set_ylabel('Number of Columns')
+        plt.suptitle(title + ' For All Columns\nMax Coil Increment to 1$\sigma$ Deviation')
+        plt.savefig(f'plots/{descriptor[1:].replace(" ", "_")}.png')
+        plt.clf()
+
+def get_worst_slopes(sigma_deviance_slopes):
+
+    worsts = {}
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        colname =coil_name + ' Slope'
+        vals = sigma_deviance_slopes[colname].values
+        quantile_value = np.nanquantile(vals, .95)
+        bad_cols = sigma_deviance_slopes.loc[sigma_deviance_slopes[colname] > quantile_value].index.tolist()
+        worsts[coil_name] = set(bad_cols)
+
+    bad_in_all = worsts['Coil_A']
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        bad_in_all = bad_in_all.intersection(worsts[coil_name])
+    
+    print('Worst 5% in all:\n', '\n'.join(bad_in_all), '\n')
+
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        bad_cols_str = '\n'.join(worsts[coil_name] - bad_in_all)
+        print(f'Worst 5pct for {coil_name}: \n{bad_cols_str}\n')
 
 if __name__ == '__main__':
     num_expected=9945
@@ -767,12 +699,11 @@ if __name__ == '__main__':
         if col.endswith('_truth'):
             cols_of_interest.append(col[:-6])
 
+    # plot_all_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
+    sigma_deviance_slopes = get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
     breakpoint()
-
-    plot_all_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
-    # sigma_deviance_slopes = get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
-
-    breakpoint()
+    get_worst_slopes(sigma_deviance_slopes)
+    visualize_sigma_deviance_slopes(sigma_deviance_slopes, coil_increments)
 
     # # is ta, coil, col
     # data = get_sigma_error_data(organized_df)
