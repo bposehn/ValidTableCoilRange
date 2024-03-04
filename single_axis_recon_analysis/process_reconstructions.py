@@ -583,6 +583,31 @@ def get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_i
     # slope, residual, last index before 90% quartile greater than 1 
     UPPER_QUANTILE_VALUE = .90
     SIGMA_DEVIANCE_THRESHOLD = 1
+    normd_sigma_deviance_slopes = np.empty((len(cols_of_interest), len(COILS_OF_INTEREST)))
+
+    base_deviances = sigma_deviance_arr[:, 0, :]
+    for i_coil, coil_name in enumerate(COILS_OF_INTEREST):
+        coil_config_indexes = np.arange(i_coil*NUM_CONFIGS_PER_COIL + 1, (i_coil+1)*NUM_CONFIGS_PER_COIL + 1)
+        coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+
+        deviance_values_along_coil = sigma_deviance_arr[:, coil_config_indexes, :]
+        normd_deviances_along_coil = abs(deviance_values_along_coil - base_deviances[:, np.newaxis])
+
+        upper_quantile_contours = np.nanquantile(normd_deviances_along_coil, UPPER_QUANTILE_VALUE, 0)
+        for i_col, col in enumerate(cols_of_interest):
+            col_upper_quantile_contour = upper_quantile_contours[:, i_col]
+            slopes_to_base = col_upper_quantile_contour / coil_increments
+            breakpoint()
+            normd_sigma_deviance_slopes[i_coil, i_col] = np.nanmax(slopes_to_base)
+
+    return normd_sigma_deviance_slopes
+
+
+def _old_get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments):
+
+    # slope, residual, last index before 90% quartile greater than 1 
+    UPPER_QUANTILE_VALUE = .90
+    SIGMA_DEVIANCE_THRESHOLD = 1
     normd_sigma_deviance_slopes = np.empty((len(cols_of_interest), 3*len(COILS_OF_INTEREST)))
 
     base_deviances = sigma_deviance_arr[:, 0, :]
@@ -701,8 +726,8 @@ if __name__ == '__main__':
 
     # plot_all_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
     sigma_deviance_slopes = get_normd_sigma_deviance_slopes(sigma_deviance_arr, cols_of_interest, coil_increments)
-    breakpoint()
-    get_worst_slopes(sigma_deviance_slopes)
+    # breakpoint()
+    # get_worst_slopes(sigma_deviance_slopes)
     visualize_sigma_deviance_slopes(sigma_deviance_slopes, coil_increments)
 
     # # is ta, coil, col
