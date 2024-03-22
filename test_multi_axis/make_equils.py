@@ -30,14 +30,16 @@ if __name__ == '__main__':
     coil_configs = []
     coil_configs.append(base_coil_currents)
 
-    all_changes_coil_config = base_coil_currents.copy()
-    for coil_to_change in max_changes:
-        coil_config = base_coil_currents.copy()
-        coil_config[coil_to_change] += max_changes[coil_to_change]
-        coil_configs.append(coil_config)
+    coil_multiples = np.logspace(0, 1, 5) / 10
+    for coil_multiple in coil_multiples:
+        all_changes_coil_config = base_coil_currents.copy()
+        for coil_to_change in max_changes:
+            coil_config = base_coil_currents.copy()
+            coil_config[coil_to_change] += coil_multiple * max_changes[coil_to_change]
+            coil_configs.append(coil_config)
 
-        all_changes_coil_config[coil_to_change] += max_changes[coil_to_change]
-    coil_configs.append(all_changes_coil_config)
+            all_changes_coil_config[coil_to_change] += coil_multiple * max_changes[coil_to_change]
+        coil_configs.append(all_changes_coil_config)
 
     num_table_axis_configs = len(table_axis_config_list)
     num_coil_configs_per_table_axis_config = len(coil_configs)
@@ -47,10 +49,12 @@ if __name__ == '__main__':
         table_axis_configs_to_make += [table_axis_config]*num_coil_configs_per_table_axis_config 
     coil_configs_to_make = coil_configs*num_table_axis_configs
 
-    pickle.dump({'TA':table_axis_configs_to_make, 'Coils':coil_configs_to_make}, open('multi_axis_cef_test_configs.pickle', 'wb'))
+    breakpoint()
 
-    dc_file = '/home/brendan.posehn@gf.local/dev/gf/flagships/ext_psi_files/pi3/pi3b_as_built_2022-09-16_G486_18425-18433.FEM'
-    output_files = run_from_yaml_axis_values_and_coil_configs(yaml_file, table_axis_configs_to_make, coil_configs_to_make,
-                                                              'make_equils', force_recalc=False, dc_file=dc_file)
+    pickle.dump({'TA':table_axis_configs_to_make, 'Coils':coil_configs_to_make}, open('gradual_multi_axis_cef_test_configs.pickle', 'wb'))
+
+    # dc_file = '/home/brendan.posehn@gf.local/dev/gf/flagships/ext_psi_files/pi3/pi3b_as_built_2022-09-16_G486_18425-18433.FEM'
+    # output_files = run_from_yaml_axis_values_and_coil_configs(yaml_file, table_axis_configs_to_make, coil_configs_to_make,
+    #                                                           'make_equils', force_recalc=False, dc_file=dc_file)
     
-    pickle.dump(output_files, open('table_d_multi_axis_test_filenames.pickle', 'wb'))
+    # pickle.dump(output_files, open('table_d_gradual_multi_axis_test_filenames.pickle', 'wb'))
