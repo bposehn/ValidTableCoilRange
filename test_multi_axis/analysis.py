@@ -15,35 +15,41 @@ def analyze_superposition_sigma_errors(sigma_error_data, columns, organized_df):
     num_configs_per_coil_multiple = 6 # doesn't include base
     num_non_base_configs_per_ta = num_coil_multiples * num_configs_per_coil_multiple
     
+    max_coil_a = organized_df.iloc[-1]['Coil_A']
+
     for i_coil_multiple in range(num_coil_multiples):
         first_non_base_index = 1 + (i_coil_multiple*num_configs_per_coil_multiple)
         coil_config_indexes = list(range(first_non_base_index, first_non_base_index+num_configs_per_coil_multiple))
 
-        print(coil_config_indexes)
+        # breakpoint()
+        pctg_change = 100 * organized_df.loc[organized_df[COIL_CONFIG_INDEX_NAME] == first_non_base_index].iloc[0]['Coil_A'] / max_coil_a
 
-        # single_change_coil_config_indexes = coil_config_indexes[:-1]
-        # all_changed_coil_config_index = coil_config_indexes[-1]
+        single_change_coil_config_indexes = coil_config_indexes[:-1]
+        all_changed_coil_config_index = coil_config_indexes[-1]
 
-        # individual_column_change_errors = np.zeros_like(sigma_error_data[:, 0, :])
-        # for single_change_coil_config_index in single_change_coil_config_indexes:
-        #     individual_column_change_errors += abs(sigma_error_data[:, single_change_coil_config_index, :])
+        individual_column_change_errors = np.zeros_like(sigma_error_data[:, 0, :])
+        for single_change_coil_config_index in single_change_coil_config_indexes:
+            individual_column_change_errors += abs(sigma_error_data[:, single_change_coil_config_index, :])
         
-        # all_column_change_errors = abs(sigma_error_data[:, all_changed_coil_config_index, :])
+        all_column_change_errors = abs(sigma_error_data[:, all_changed_coil_config_index, :])
 
-        # num_bad = (all_column_change_errors > individual_column_change_errors).sum()
+        num_bad = (all_column_change_errors > individual_column_change_errors).sum()
+        pctg_bad = num_bad / all_column_change_errors.size 
+
+        print(f'{pctg_change}: {pctg_bad * 100}')
 
         # breakpoint()
 
 # all recons are done in cef_multi_asxis_test
 
 if __name__ == '__main__':
-    num_expected=1365
+    num_expected=6050
     # num_non_base_coil_configs_per_coil = 6/5
     num_non_base_coil_configs_per_coil = 30/5
 
     plt.style.use('dark_background')
 
-    base = 'data/max_change_table_d'
+    base = 'data/gradual_change_table_d'
     recons_output_loc = os.path.join(base, 'recon_outputs')
     all_cols_df_loc = os.path.join(base, 'recon_results_all_cols.csv')
     organized_df_loc = os.path.join(base, 'organized.csv')
@@ -66,7 +72,7 @@ if __name__ == '__main__':
         organized_df.to_csv(organized_df_loc)
     else:
         organized_df = pd.read_csv(organized_df_loc)
-
+    
     if force_solve or not os.path.exists(sigma_deviance_arr_loc):
         # Entry for each table axis config, for each coil, for each col sigmas off
         sigma_deviance_arr, columns = get_all_cols_sigma_error_data(organized_df)
