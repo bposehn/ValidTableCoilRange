@@ -20,17 +20,17 @@ from flagships.table_launcher.table_completion_checker import TableCompletionChe
 from flagships.gs_solver.fs_flagships import LambdaAndBetaPol1Params
 from flagships.gs_solver.fs_curves import NevinsCurve, NevinsCurveYBased
 
-from reconstruction.tools.testcase_tools.csv_tools.testcase_parallel_worker import TestcaseParallelWorker
-from reconstruction.tools.testcase_tools.csv_tools.input_profile_json_generator import DensityProfileJsonGenerator
+import equilibria_completion_checker
+import testcase_completion_checker
 
-from flux_point_coil_error_factor_equilibria_completion_checker import CoilErrorFactorEquilibriaCompletionChecker
-from flux_point_coil_error_factor_testcase_completion_checker import CoilErrorFactorTestcaseCompletionChecker
+from flux_point_calculator import FluxPointCalculator
 
-FPA_LOC = 'flux_per_amp_values.csv'
-COIL_NAMES = ['Coil_A', 'Coil_C', 'Coil_D', 'PFC_1', 'PFC_2']
+FPA_LOC = 'data/flux_per_amp_values.csv'
 
 POINT_FLUX_CONFIG_INDEX_ABBREVIATION = 'PFCI'
 TABLE_AXIS_CONFIG_INDEX_ABBREVIATION = 'TACI'
+
+COILS_TO_IGNORE = ['Inner Coil', 'Nose Coil', 'PFC_3', 'PlasmaCurrent']
 
 #TODO rename files to be shroter
 
@@ -67,15 +67,18 @@ class FluxPointCoilErrorFactorTableGenerator():
 
         self.flux_point_calculator = FluxPointCalculator(FPA_LOC)
 
-        table_metadata_file = None # TODO get from table ? 
+        table_metadata_file = self.config['base_table_metadata_path']
         with open(table_metadata_file, 'r') as f:
             self.base_table_metadata: Dict = yaml.safe_load(f) 
-
+        
         self.base_table_coil_currents = self.base_table_metadata['FEMM_currents']
-        self.base_table_flux_point_config = self.flux_point_calculator._get_flux_at_points(self.base_table_coil_currents)
+        for coil_name in COILS_TO_IGNORE:
+            del self.base_table_coil_currents[coil_name]
+
+        self.base_table_flux_point_config = self.flux_point_calculator.get_flux_at_points(self.base_table_coil_currents)
         self.CEF_table_to_base_table_flux_point_diffs = self.flux_point_configs - pd.Series(self.base_table_flux_point_config)
 
-        self.name = f'CEF_{self.base_table_metadata["table_name"]}_{self.suffix}'
+        self.name = f'CEF_{self.base_table_metadata["description"]}_{self.base_table_metadata["lut_date"]}_{self.suffix}'
     
         self.fs_job_name = f'FS_{self.name}'
         self.recons_job_name = f'TC_{self.name}'
@@ -110,12 +113,14 @@ class FluxPointCoilErrorFactorTableGenerator():
 
     def _generate_equilibria(self):
         dc_file_paths = self._generate_dc_files()
-        
+
+        os.makedirs(self.run_params_output_dir, exist_ok=True)
+
         for i_dc_file, dc_file_path in enumerate(dc_file_paths):
             for i_table_axis_config, table_axis_config_row in self.table_axis_configs.iterrows():
                 equil_name = f'{POINT_FLUX_CONFIG_INDEX_ABBREVIATION}{i_dc_file:05d}_{TABLE_AXIS_CONFIG_INDEX_ABBREVIATION}{i_table_axis_config:05d}.hdf5'
 
-                if 'NevinsN' in table_axis_config_row.columns:
+                if 'NevinsN' in table_axis_config_row:
                     lambda_curve = NevinsCurve(table_axis_config_row['NevinsA'], table_axis_config_row['NevinsA'],
                                                table_axis_config_row['NevinsC'], table_axis_config_row['NevinsN'])
                 else:
@@ -123,7 +128,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                                                table_axis_config_row['NevinsC'], table_axis_config_row['NevinsY'])
                 pressure_curve = None
 
-                Ishaft = self.base_table_metadata['Ishaft']
+                Ishaft = 1.0e6 # self.base_table_metadata['Ishaft']
                 Ipl = table_axis_config_row['CurrentRatio'] * Ishaft
                 psi_lim = 0
 
@@ -136,7 +141,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                                                      table_axis_config_row['psieq_soak'],
                                                      lambda_curve, Ishaft, Ipl,
                                                      table_axis_config_row['beta_pol1_setpoint'], psi_lim,
-                                                     expected_opoint=table_axis_config_row['expected_opoint'], 
+                                                     expected_opoint=self.base_table_metadata['expected_opoint'], 
                                                      pressure_curve=pressure_curve,
                                                      mesh_resolution=self.base_table_metadata['mesh_resolution'])
                 
@@ -144,11 +149,12 @@ class FluxPointCoilErrorFactorTableGenerator():
                     pickle.dump(run_params, f)
 
         args = PickledRunParamsParallelWorkerArgs(self.run_params_output_dir, write_to_sql=False,
-                                                  output_root=self.equil_output_dir, force_all_skip_none=True)
+                                                  output_root=self.equil_output_dir, force_solve=True, skip_solve=False,
+                                                  force_postproc=False, force_all_skip_none=False, skip_postproc=True)
         launcher = split.Launcher(self.fs_job_name, PickledRunParamsParallelWorker, vars(args),
-                                   env_file=os.environ.get("FLAGSHIPS_ENV_FILE"))
+                                   env_file=os.environ.get('FLAGSHIPS_ENV_FILE'))
         launcher.launch()
-        launcher.write_checker(CoilErrorFactorEquilibriaCompletionChecker)
+        launcher.write_checker(equilibria_completion_checker.CoilErrorFactorEquilibriaCompletionChecker)
 
     def _perform_reconstructions(self):
 
@@ -161,12 +167,16 @@ class FluxPointCoilErrorFactorTableGenerator():
                 'fs_table': self.base_table_metadata['table_name'],
                 'density_profile_json': self.density_profiles_json_path} # TODO 
         
-        launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args)
-        launcher.write_checker(CoilErrorFactorTestcaseCompletionChecker)
+        from reconstruction.tools.testcase_tools.csv_tools.testcase_parallel_worker import TestcaseParallelWorker
+
+        launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args, env_file=os.environ.get('RECON_ENV_FILE'))
+        launcher.write_checker(testcase_completion_checker.CoilErrorFactorTestcaseCompletionChecker)
 
     def _make_density_profiles_json(self):
         # Need the same density profile for each flux point config as will be comparing them directly
         density_profile_kwargs = {} # TODO perhaps constrain density profiles
+
+        from reconstruction.tools.testcase_tools.csv_tools.input_profile_json_generator import DensityProfileJsonGenerator
 
         density_profiles = []
         for _ in range(self.num_flux_point_configs):
@@ -213,9 +223,10 @@ class FluxPointCoilErrorFactorTableGenerator():
         coil_configs = []
         if self._coil_configs_at_flux_points is None:
             for i_row, row in self.flux_point_configs.iterrows():
-                coil_configs.append(self.flux_point_calculator._get_coils_from_fluxes(row.to_dict()))
+                coil_configs.append(self.flux_point_calculator.get_coils_from_fluxes(row.to_dict()))
 
             self._coil_configs_at_flux_points = pd.DataFrame.from_dict(coil_configs)
+            self._coil_configs_at_flux_points *= 100
 
         return self._coil_configs_at_flux_points
     
@@ -225,7 +236,7 @@ class FluxPointCoilErrorFactorTableGenerator():
             femm_properties.append({'frequency': 0, 'currents': row.to_dict()})
 
         dc_file_paths = run_fem_file_with_new_properties(femm_properties,
-                                dc_file=os.path.join(os.getenv('FS_ROOT'), self.base_table_metadata['dc_file']),
+                                dc_file=os.path.join(os.getenv('FS_ROOT'), self.config['base_dc_file_path']),
                                 output_dir=self.ans_output_dir)
 
         return dc_file_paths
@@ -307,83 +318,6 @@ class FluxPointCoilErrorFactorTableGenerator():
         return testcase_result_df
     
 
-
-class FluxPointCalculator():
-    def __init__(self, flux_point_df_loc: str):
-        self.flux_per_amp_df = pd.read_csv(flux_point_df_loc)
-        self.flux_per_amp_df = self.flux_per_amp_df.set_index('loc_names')
-
-    def _get_flux_at_points(self, coil_config: Dict[str, float]):
-        coil_names = list(coil_config.keys())
-        coil_values = np.array([coil_config[coil_name] for coil_name in coil_names])[np.newaxis].T
-
-        point_flux_values = self.flux_per_amp_df[coil_names] @ coil_values
-        point_flux_values = point_flux_values / point_flux_values.loc['equator']
-
-        return point_flux_values.to_dict()[0]
-    
-    def _get_coils_from_fluxes(self, flux_values: Dict[str, float]):
-        point_names = list(flux_values.keys())
-        flux_values = np.array([flux_values[point_name] for point_name in point_names])
-
-        flux_per_amp_values = self.flux_per_amp_df.loc[point_names][COIL_NAMES]
-        # flux_per_amp_values.drop(columns=['Coil_A'], inplace=True)
-        
-        coil_values, _, _, _ = np.linalg.lstsq(flux_per_amp_values, flux_values)
-        coil_values /= coil_values.max()
-
-        return {coil_name: coil_values[i_coil] for i_coil, coil_name in enumerate(COIL_NAMES)}
-
-def run_femm(coil_currents):
-    fem_properties_base = {'frequency': 0, 'currents': coil_currents}          
-
-    dc_file = os.path.join('/home/brendan.posehn@gf.local/dev/gf/flagships', 'ext_psi_files', 'pi3', 'pi3b_as_built_2022-09-16_G486_18425-18433.FEM')
-    return run_fem_file_with_new_properties([fem_properties_base], dc_file, 'ans')
-
-def rerun_fpa():
-    fpc = FluxPointCalculator(FPA_LOC)
-
-    fem_properties_base = {'frequency': 0, 'currents': {'Coil_A': 0, 'Coil_B':0, 'Coil_C':0, 'Coil_D':0, 'PFC_1':0, 'PFC_2':0}}
-
-    fem_property_sets = []
-    for coil_name in fem_properties_base['currents']:
-        fem_properties = deepcopy(fem_properties_base)
-        fem_properties['currents'][coil_name] = 1
-        fem_property_sets.append(fem_properties)
-
-    breakpoint()
-    dc_file = os.path.join('/home/brendan.posehn@gf.local/dev/gf/flagships', 'ext_psi_files', 'pi3', 'pi3b_as_built_2022-09-16_G486_18425-18433.FEM')
-    femm_files = run_fem_file_with_new_properties(fem_property_sets, dc_file, 'ans')
-
-    femm.openfemm()
-    for femm_file in femm_files:
-        femm.opendocument(femm_file)
-
-        flux_vals = {}
-        for i, row in fpc.flux_per_amp_df.iterrows():
-            flux_vals[row.name] = femm.mo_geta(row['r']*1e3, row['z']*1e3)
-        print(femm_file)
-        print(flux_vals)
-
 if __name__ == '__main__':
-    fpc = FluxPointCalculator(FPA_LOC)
-
-    unnormd_config_fluxes = {'equator': -0.02930246232160905, 'outer_throat': -0.02107526974001225, 'inner_throat': -0.002912227073129654, 'upper': -0.03901617754340687}
-    config_fluxes = {key: val / unnormd_config_fluxes['equator'] for key, val in unnormd_config_fluxes.items()}
-
-    coil_values = fpc._get_coils_from_fluxes(config_fluxes)
-    flux_values = fpc._get_flux_at_points(coil_values)
-
-    fem_files = run_femm(coil_values)
-
-    femm.openfemm()
-    femm.opendocument(fem_files[0])
-
-    flux_vals = {}
-    for i, row in fpc.flux_per_amp_df.iterrows():
-        flux_vals[row.name] = femm.mo_geta(row['r']*1e3, row['z']*1e3)
-
-    for fluxes in [config_fluxes, flux_vals]:
-        for loc in fluxes:
-            print(loc, fluxes[loc] / fluxes['equator'])
-
+    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'out', '_')
+    table_generator.launch()

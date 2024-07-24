@@ -1,12 +1,12 @@
 import sys
 
 from split.completion_checker import CompletionChecker
-from flux_point_coil_error_factor_table_generator import FluxPointCoilErrorFactorTableGenerator
+import table_generator
 
 class CoilErrorFactorTestcaseCompletionChecker(CompletionChecker):
-    def __init__(self, argfile_path, table_generator: FluxPointCoilErrorFactorTableGenerator):
+    def __init__(self, argfile_path):
         super().__init__(argfile_path)
-        self.table_generator = table_generator
+        self.table_generator = table_generator.FluxPointCoilErrorFactorTableGenerator.from_argfile(argfile_path)
 
     def success_behaviour(self):
         super().success_behaviour()

@@ -1,0 +1,4 @@
+table_axis_config_path: data/15_TA_table_a_configs.csv
+flux_point_values_path: data/10_clustered_flux_configs.csv
+base_table_metadata_path: /home/brendan.posehn@gf.local/tables/pi3b_asbuilt_A_C362_D-343_2023-10-12.yaml
+base_dc_file_path: /home/brendan.posehn@gf.local/dev/gf/flagships/ext_psi_files/pi3/pi3b_as_built_2022-09-16_G486_18425-18433.FEM
