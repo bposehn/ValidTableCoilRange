@@ -46,7 +46,7 @@ class FluxPointCoilErrorFactorTableGenerator():
         suffix
         other configs for generating tables
     '''
-    def __init__(self, config_yaml_path: str, output_path: str, suffix: str):
+    def __init__(self, config_yaml_path: str, output_path: str, suffix: str = ''):
         self.output_path = output_path
         self.ans_output_dir = os.path.join(self.output_path, 'ans_files')
         self.equil_output_dir = os.path.join(self.output_path, 'equil')
@@ -78,12 +78,16 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.base_table_flux_point_config = self.flux_point_calculator.get_flux_at_points(self.base_table_coil_currents)
         self.CEF_table_to_base_table_flux_point_diffs = self.flux_point_configs - pd.Series(self.base_table_flux_point_config)
 
-        self.name = f'CEF_{self.base_table_metadata["description"]}_{self.base_table_metadata["lut_date"]}_{self.suffix}'
+        self.name = f'CEF_{self.base_table_metadata["description"]}_{self.base_table_metadata["lut_date"]}'
+        if suffix != '':
+            if suffix[0] == '_': 
+                suffix = suffix[1:]
+            self.name += f'_{suffix}'
     
         self.fs_job_name = f'FS_{self.name}'
         self.recons_job_name = f'TC_{self.name}'
 
-        self.serialized_path = os.path.join(output_path, f'{self.name}.pickle')
+        self.serialized_path = f'{self.name}.pickle'
         self.recon_config_path = os.path.join(self.output_path, f'{self.name}_BayesianReconstructionWorkflow.yaml')
 
         self._coil_configs_at_flux_points: pd.DataFrame = None
@@ -94,16 +98,17 @@ class FluxPointCoilErrorFactorTableGenerator():
 
     def serialize(self):
         with open(self.serialized_path, 'wb') as f:
-            pickle.dump(self)
+            pickle.dump(self, f)
 
     # TODO don't love this as it exposes launcher stuff here
     @staticmethod
-    def from_argile(argfile_path: str):
-        run_args = RunArgs(argfile_path)
+    def from_argfile(argfile_path: str):
+        run_args = RunArgs.read(argfile_path)
 
         argfile_path = run_args.table
         split_path = argfile_path.split(os.sep)
         serialized_path = os.sep.join(split_path[:-1] + [split_path[-1][3:]]) + '.pickle'
+        print(serialized_path)
         with open(serialized_path, 'rb') as f:
             return pickle.load(f)
 
@@ -115,6 +120,8 @@ class FluxPointCoilErrorFactorTableGenerator():
         dc_file_paths = self._generate_dc_files()
 
         os.makedirs(self.run_params_output_dir, exist_ok=True)
+
+        fs_root = os.getenv('FS_ROOT')
 
         for i_dc_file, dc_file_path in enumerate(dc_file_paths):
             for i_table_axis_config, table_axis_config_row in self.table_axis_configs.iterrows():
@@ -133,11 +140,11 @@ class FluxPointCoilErrorFactorTableGenerator():
                 psi_lim = 0
 
                 run_params = LambdaAndBetaPol1Params(self.equil_output_dir, equil_name,
-                                                     self.base_table_metadata['geom_file'],
+                                                     os.path.join(fs_root, self.base_table_metadata['geom_file']),
                                                      self.base_table_metadata['ext_psi_scale_loc'],
                                                      dc_file_path,
                                                      table_axis_config_row['psieq_dc'],
-                                                     self.base_table_metadata['soak_file'],
+                                                     os.path.join(fs_root, self.base_table_metadata['soak_file']),
                                                      table_axis_config_row['psieq_soak'],
                                                      lambda_curve, Ishaft, Ipl,
                                                      table_axis_config_row['beta_pol1_setpoint'], psi_lim,
@@ -148,6 +155,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                 with open(os.path.join(self.run_params_output_dir, equil_name[:-5] + '.pickle'), 'wb') as f:
                     pickle.dump(run_params, f)
 
+        self.serialize()
         args = PickledRunParamsParallelWorkerArgs(self.run_params_output_dir, write_to_sql=False,
                                                   output_root=self.equil_output_dir, force_solve=True, skip_solve=False,
                                                   force_postproc=False, force_all_skip_none=False, skip_postproc=True)
@@ -167,6 +175,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                 'fs_table': self.base_table_metadata['table_name'],
                 'density_profile_json': self.density_profiles_json_path} # TODO 
         
+        breakpoint() 
         from reconstruction.tools.testcase_tools.csv_tools.testcase_parallel_worker import TestcaseParallelWorker
 
         launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args, env_file=os.environ.get('RECON_ENV_FILE'))
@@ -319,5 +328,5 @@ class FluxPointCoilErrorFactorTableGenerator():
     
 
 if __name__ == '__main__':
-    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'out', '_')
+    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'out')
     table_generator.launch()
