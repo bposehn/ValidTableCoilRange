@@ -71,6 +71,10 @@ class FluxPointCoilErrorFactorTableGenerator():
         with open(table_metadata_file, 'r') as f:
             self.base_table_metadata: Dict = yaml.safe_load(f) 
 
+        self.base_table_coil_currents = self.base_table_metadata['FEMM_currents']
+        self.base_table_flux_point_config = self.flux_point_calculator._get_flux_at_points(self.base_table_coil_currents)
+        self.CEF_table_to_base_table_flux_point_diffs = self.flux_point_configs - pd.Series(self.base_table_flux_point_config)
+
         self.name = f'CEF_{self.base_table_metadata["table_name"]}_{self.suffix}'
     
         self.fs_job_name = f'FS_{self.name}'
@@ -80,6 +84,8 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.recon_config_path = os.path.join(self.output_path, f'{self.name}_BayesianReconstructionWorkflow.yaml')
 
         self._coil_configs_at_flux_points: pd.DataFrame = None
+
+        self._flux_point_configs_diffs_to_base_table: pd.DataFrame = None
 
         self.flux_point_names = list(self.flux_point_calculator.flux_per_amp_df.index)
 
@@ -164,7 +170,7 @@ class FluxPointCoilErrorFactorTableGenerator():
 
         density_profiles = []
         for _ in range(self.num_flux_point_configs):
-            density_profiles += [DensityProfileJsonGenerator.get_random_profile()]*self.num_table_axis_configs
+            density_profiles += [DensityProfileJsonGenerator.get_random_profile(**density_profile_kwargs)]*self.num_table_axis_configs
 
         DensityProfileJsonGenerator.save_input_profiles_json(density_profiles, self.density_profiles_path)
 
@@ -226,54 +232,36 @@ class FluxPointCoilErrorFactorTableGenerator():
     
     def _process_testcases(self):
         testcase_results = self._read_testcase_results()
-        sigma_deviances, col_names = self._get_sigma_deviances(testcase_results)
-        self.normd_sigma_deviance_slopes(sigma_deviances, col_names)
+        # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
+        recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results)
+        # TODO naming is crazy here 
+        recon_sigma_deviances_to_truth_difference_to_base_coil_config = \
+            self._get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(recon_sigma_deviances_to_truth, col_names)
 
-    def _get_normd_sigma_deviance_slopes(self, sigma_deviance_arr, cols_of_interest, coil_increments):
+    # TODO better naming 
+    # do this at each point, whereas other way is getting the max at each point 
+    def _get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(self, recon_sigma_deviances_to_truth, cols_of_interest):
 
-        # TODO need to get working with flux points 
+        UPPER_QUANTILE_VALUE = .90 # TODO this should be in config? 
 
-        # slope, residual, last index before 90% quartile greater than 1 
-        UPPER_QUANTILE_VALUE = .90
-        SIGMA_DEVIANCE_THRESHOLD = 1
-        normd_sigma_deviance_slopes = np.empty((len(cols_of_interest), len(self.flux_point_names)))
+        # for each col, for each flux point config 
+        normd_sigma_deviance_slopes = np.empty((recon_sigma_deviances_to_truth.shape[1], len(cols_of_interest)))
 
-        base_deviances = sigma_deviance_arr[:, 0, :]
+        base_deviances = recon_sigma_deviances_to_truth[:, 0, :]
 
-        nan_cols = set()
-        for i_flux_point, flux_point_name in enumerate(self.flux_point_names):
-            coil_config_indexes = np.arange(i_flux_point*self.num_table_axis_configs + 1,
-                                             (i_flux_point+1)*self.num_table_axis_configs + 1)
-            coil_config_indexes = np.insert(coil_config_indexes, 0, 0)
+        for i_flux_config in range(1, self._get_recon_sigma_deviances_to_truth.shape[1]):
+            deviance_values_at_flux_config = recon_sigma_deviances_to_truth[:, i_flux_config, :] - base_deviances
+            absd_deviance_values_at_flux_config = abs(deviance_values_at_flux_config)
 
-            deviance_values_along_coil = sigma_deviance_arr[:, coil_config_indexes, :]
-            normd_deviances_along_coil = abs(deviance_values_along_coil - base_deviances[:, np.newaxis])
+            upper_quantile_contours = np.nanquantile(absd_deviance_values_at_flux_config, UPPER_QUANTILE_VALUE, 0)
 
-            upper_quantile_contours = np.nanquantile(normd_deviances_along_coil, UPPER_QUANTILE_VALUE, 0)
-            for i_col, col in enumerate(cols_of_interest):
-                col_upper_quantile_contour = upper_quantile_contours[:, i_col]
+            normd_sigma_deviance_slopes[i_flux_config] = upper_quantile_contours
 
-                idxs_geq_threshold = np.where(col_upper_quantile_contour > SIGMA_DEVIANCE_THRESHOLD)[0]
-                if len(idxs_geq_threshold) == 0:
-                    first_idx_geq_threshold = len(col_upper_quantile_contour)
-                else:
-                    first_idx_geq_threshold = idxs_geq_threshold[0]
-
-                if first_idx_geq_threshold == 1: 
-                    print(col, col_upper_quantile_contour)
-                    nan_cols.add(col)
-                    normd_sigma_deviance_slopes[i_col, i_flux_point] = col_upper_quantile_contour[0] / coil_increments[0]
-                else:
-                    slopes_to_base = col_upper_quantile_contour / coil_increments
-                    normd_sigma_deviance_slopes[i_col, i_flux_point] = np.nanmax(slopes_to_base[:first_idx_geq_threshold])
-
-        print(f'Columns with nan slope values as even first coil increment caused rise above threshold: {nan_cols}')
-        colnames = [coil_name + ' Slope' for coil_name in self.flux_point_names]
+        colnames = [col_name + ' Sigmas' for col_name in cols_of_interest]
         df = pd.DataFrame(normd_sigma_deviance_slopes, columns=colnames)
         return df
 
-
-    def _get_sigma_deviances(self, testcase_results):
+    def _get_recon_sigma_deviances_to_truth(self, testcase_results):
         cols_of_interest = []
         for col in testcase_results.columns:
             if col.endswith('_truth'):
@@ -288,7 +276,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                 truth_values = single_ta_df[col_name + '_truth']
                 recond_values = single_ta_df[col_name + '_mean']
                 recond_sigmas = single_ta_df[col_name + '_sigma']
-                sigmas_off = ((truth_values - recond_values) / recond_sigmas)
+                sigmas_off = ((truth_values - recond_values) / recond_sigmas) # TODO should abs this ?
                 sigmas_off.where(recond_sigmas > 1e-6, np.nan, inplace=True) # TODO is this valid? 
                 data[i_ta_config, :, i_col_name] = sigmas_off.values
 
