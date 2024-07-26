@@ -13,6 +13,11 @@ import git
 import split
 from split.common import RunArgs
 
+fs_path = os.path.join(os.path.dirname(os.getenv('FS_ROOT')))
+sys.path.insert(0, fs_path)
+sys.path.insert(0, os.path.join(os.getenv('FS_ROOT'), 'post_processing'))
+print(f"NOTE: Using flagships code from {fs_path}")
+
 from flagships.femm_tools.run_xfemm import run_fem_file_with_new_properties
 # from flagships.table_launcher.flagships_table_parallel_worker import FlagshipsT
 from flagships.gs_solver.pickled_run_params_parallel_worker import PickledRunParamsParallelWorker, PickledRunParamsParallelWorkerArgs
@@ -108,9 +113,12 @@ class FluxPointCoilErrorFactorTableGenerator():
         argfile_path = run_args.table
         split_path = argfile_path.split(os.sep)
         serialized_path = os.sep.join(split_path[:-1] + [split_path[-1][3:]]) + '.pickle'
-        print(serialized_path)
         with open(serialized_path, 'rb') as f:
-            return pickle.load(f)
+            gen = pickle.load(f)
+
+        gen.__init__('cef_table_config.yaml', 'out') #TODO can remove but for now want to be able to change configs between runs 
+
+        return gen
 
     def launch(self):
         self._generate_equilibria()
@@ -156,6 +164,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                     pickle.dump(run_params, f)
 
         self.serialize()
+
         args = PickledRunParamsParallelWorkerArgs(self.run_params_output_dir, write_to_sql=False,
                                                   output_root=self.equil_output_dir, force_solve=True, skip_solve=False,
                                                   force_postproc=False, force_all_skip_none=False, skip_postproc=True)
@@ -169,23 +178,33 @@ class FluxPointCoilErrorFactorTableGenerator():
         # need to have same density profiles 
         self._make_density_profiles_json()
 
-        args = {'table': self.recons_job_name, 
+        args = {'table': self.recons_job_name, #TODO REMOVE hardcoded suffix 
                 'hdf_dir': self.equil_output_dir,
                 'cals_dir': None,
-                'fs_table': self.base_table_metadata['table_name'],
-                'density_profile_json': self.density_profiles_json_path} # TODO 
+                'fs_table': self.config['recon_table'],
+                'density_profile_json': self.density_profiles_path,
+                'output_root': self.recon_output_dir,
+                'batch_size': 1, # TODO perhaps make it always 1 at the testcase level
+                'experiment': 'pi3b',
+                'cals_dir': os.path.join(os.getenv('RECONCAL_ROOT'), 'pi3b', 'reconstruction_filter_calibration'),
+                'num_workers': 1,
+                } 
         
-        breakpoint() 
         from reconstruction.tools.testcase_tools.csv_tools.testcase_parallel_worker import TestcaseParallelWorker
+
+        os.makedirs(self.recon_output_dir, exist_ok=True)
 
         launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args, env_file=os.environ.get('RECON_ENV_FILE'))
         launcher.write_checker(testcase_completion_checker.CoilErrorFactorTestcaseCompletionChecker)
+
+        launcher.launch()
 
     def _make_density_profiles_json(self):
         # Need the same density profile for each flux point config as will be comparing them directly
         density_profile_kwargs = {} # TODO perhaps constrain density profiles
 
-        from reconstruction.tools.testcase_tools.csv_tools.input_profile_json_generator import DensityProfileJsonGenerator
+        sys.path.append(os.path.join(os.getenv('AURORA_REPOS'), 'reconstruction'))
+        from tools.testcase_tools.csv_tools.input_profile_json_generator import DensityProfileJsonGenerator
 
         density_profiles = []
         for _ in range(self.num_flux_point_configs):
@@ -304,8 +323,9 @@ class FluxPointCoilErrorFactorTableGenerator():
         
     def _read_testcase_results(self):
         # TODO likely way faster way to do this 
-        testcase_output_files = os.listdir(self.recon_output_dir)
+        # testcase_output_dirs = os.listdir(os.path.join(self.recon_output_dir, testcase_parallel_worker.))
 
+        breakpoint()
         test_f = testcase_output_files[0]
         PFCI_start = test_f.find(POINT_FLUX_CONFIG_INDEX_ABBREVIATION) + len(POINT_FLUX_CONFIG_INDEX_ABBREVIATION)
         PFCI_end = test_f.find('_', PFCI_start)
