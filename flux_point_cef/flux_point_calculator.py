@@ -16,7 +16,7 @@ class FluxPointCalculator():
         coil_values = np.array([coil_config[coil_name] for coil_name in coil_names])[np.newaxis].T
 
         unnormd_point_flux_values = self.flux_per_amp_df[coil_names] @ coil_values
-        point_flux_values = unnormd_point_flux_values / np.linalg.norm(unnormd_point_flux_values)[np.newaxis].T
+        point_flux_values = unnormd_point_flux_values / unnormd_point_flux_values['equator']
 
         return point_flux_values.to_dict()[0]
     
