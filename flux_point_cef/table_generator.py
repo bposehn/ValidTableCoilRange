@@ -4,6 +4,7 @@ from copy import deepcopy
 import yaml
 import pickle
 import datetime
+import glob
 
 import pandas as pd
 import numpy as np
@@ -81,6 +82,7 @@ class FluxPointCoilErrorFactorTableGenerator():
             del self.base_table_coil_currents[coil_name]
 
         self.base_table_flux_point_config = self.flux_point_calculator.get_flux_at_points(self.base_table_coil_currents)
+        self.flux_point_configs = pd.concat((pd.DataFrame(self.base_table_flux_point_config, index=[0]), self.flux_point_configs), ignore_index=True)
         self.CEF_table_to_base_table_flux_point_diffs = self.flux_point_configs - pd.Series(self.base_table_flux_point_config)
 
         self.name = f'CEF_{self.base_table_metadata["description"]}_{self.base_table_metadata["lut_date"]}'
@@ -271,8 +273,14 @@ class FluxPointCoilErrorFactorTableGenerator():
     
     def _process_testcases(self):
         testcase_results = self._read_testcase_results()
-        # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
+        testcase_results.to_csv('out/testcase_results.csv', index=False)
+
+        # testcase_results = pd.read_csv('out/testcase_results.csv')
+        # # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
         recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results)
+        pickle.dump((recon_sigma_deviances_to_truth, col_names), open('out/sigma_devs_and_cols.pickle', 'wb'))
+        # recon_sigma_deviances_to_truth, col_names = pickle.load(open('out/sigma_devs_and_cols.pickle', 'rb'))
+
         # TODO naming is crazy here 
         recon_sigma_deviances_to_truth_difference_to_base_coil_config = \
             self._get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(recon_sigma_deviances_to_truth, col_names)
@@ -280,7 +288,6 @@ class FluxPointCoilErrorFactorTableGenerator():
     # TODO better naming 
     # do this at each point, whereas other way is getting the max at each point 
     def _get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(self, recon_sigma_deviances_to_truth, cols_of_interest):
-
         UPPER_QUANTILE_VALUE = .90 # TODO this should be in config? 
 
         # for each col, for each flux point config 
@@ -288,7 +295,7 @@ class FluxPointCoilErrorFactorTableGenerator():
 
         base_deviances = recon_sigma_deviances_to_truth[:, 0, :]
 
-        for i_flux_config in range(1, self._get_recon_sigma_deviances_to_truth.shape[1]):
+        for i_flux_config in range(1, recon_sigma_deviances_to_truth.shape[1]): 
             deviance_values_at_flux_config = recon_sigma_deviances_to_truth[:, i_flux_config, :] - base_deviances
             absd_deviance_values_at_flux_config = abs(deviance_values_at_flux_config)
 
@@ -296,8 +303,7 @@ class FluxPointCoilErrorFactorTableGenerator():
 
             normd_sigma_deviance_slopes[i_flux_config] = upper_quantile_contours
 
-        colnames = [col_name + ' Sigmas' for col_name in cols_of_interest]
-        df = pd.DataFrame(normd_sigma_deviance_slopes, columns=colnames)
+        df = pd.DataFrame(normd_sigma_deviance_slopes, columns=cols_of_interest)
         return df
 
     def _get_recon_sigma_deviances_to_truth(self, testcase_results):
@@ -310,35 +316,39 @@ class FluxPointCoilErrorFactorTableGenerator():
         
         # Entry for each table axis config, for each flux config, for each col sigmas off
         for i_ta_config in range(self.num_table_axis_configs):
-            single_ta_df = testcase_results.loc[testcase_results[TABLE_AXIS_CONFIG_INDEX_ABBREVIATION] == i_ta_config]
-            for i_col_name, col_name in enumerate(cols_of_interest):
-                truth_values = single_ta_df[col_name + '_truth']
-                recond_values = single_ta_df[col_name + '_mean']
-                recond_sigmas = single_ta_df[col_name + '_sigma']
-                sigmas_off = ((truth_values - recond_values) / recond_sigmas) # TODO should abs this ?
-                sigmas_off.where(recond_sigmas > 1e-6, np.nan, inplace=True) # TODO is this valid? 
-                data[i_ta_config, :, i_col_name] = sigmas_off.values
+            for i_fp_config in range(self.num_flux_point_configs):
+                single_ta_fp_config_df = testcase_results.loc[(testcase_results[TABLE_AXIS_CONFIG_INDEX_ABBREVIATION] == i_ta_config) & (testcase_results[POINT_FLUX_CONFIG_INDEX_ABBREVIATION] == i_fp_config)]
+                if single_ta_fp_config_df.empty:
+                    data[i_ta_config, i_fp_config] = np.ones(len(cols_of_interest)) * np.nan
+                else:
+                    for i_col_name, col_name in enumerate(cols_of_interest):
+                        truth_values = single_ta_fp_config_df[col_name + '_truth']
+                        recond_values = single_ta_fp_config_df[col_name + '_mean']
+                        recond_sigmas = single_ta_fp_config_df[col_name + '_sigma']
+                        sigmas_off = ((truth_values - recond_values) / recond_sigmas) # TODO should abs this ?
+                        sigmas_off.where(recond_sigmas > 1e-6, np.nan, inplace=True) # TODO is this valid? 
+                        data[i_ta_config, i_fp_config, i_col_name] = sigmas_off.values
 
         return data, cols_of_interest
         
     def _read_testcase_results(self):
-        # TODO likely way faster way to do this 
-        # testcase_output_dirs = os.listdir(os.path.join(self.recon_output_dir, testcase_parallel_worker.))
+        testcase_output_files = glob.glob('out/recons/batch_testcase_outputs/*/testcase_0.csv')
 
-        breakpoint()
-        test_f = testcase_output_files[0]
-        PFCI_start = test_f.find(POINT_FLUX_CONFIG_INDEX_ABBREVIATION) + len(POINT_FLUX_CONFIG_INDEX_ABBREVIATION)
-        PFCI_end = test_f.find('_', PFCI_start)
-        TACI_start = test_f.find(TABLE_AXIS_CONFIG_INDEX_ABBREVIATION) + len(TABLE_AXIS_CONFIG_INDEX_ABBREVIATION)
-        TACI_end = test_f.find('.', TACI_start)
+        test_filename = pd.read_csv(testcase_output_files[0])['FileName'].iloc[0]
+        PFCI_start = test_filename.find(POINT_FLUX_CONFIG_INDEX_ABBREVIATION) + len(POINT_FLUX_CONFIG_INDEX_ABBREVIATION)
+        PFCI_end = test_filename.find('_', PFCI_start)
+        TACI_start = test_filename.find(TABLE_AXIS_CONFIG_INDEX_ABBREVIATION) + len(TABLE_AXIS_CONFIG_INDEX_ABBREVIATION)
+        TACI_end = test_filename.find('.', TACI_start)
 
         results = []
         point_flux_config_indices = []
         table_axis_config_indices = []
         for f in testcase_output_files:
-            point_flux_config_indices.append(int(f[PFCI_start:PFCI_end]))
-            table_axis_config_indices.append(int(f[TACI_start:TACI_end]))
-            results.append(pd.read_csv(os.path.join(self.recon_output_dir, f)).to_dict())
+            df = pd.read_csv(f)
+            filename = df['FileName'].iloc[0]
+            point_flux_config_indices.append(int(filename[PFCI_start:PFCI_end]))
+            table_axis_config_indices.append(int(filename[TACI_start:TACI_end]))
+            results.append(df.iloc[0].to_dict())
 
         testcase_result_df = pd.DataFrame.from_dict(results)
         testcase_result_df[TABLE_AXIS_CONFIG_INDEX_ABBREVIATION] = table_axis_config_indices
