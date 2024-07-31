@@ -31,14 +31,12 @@ import testcase_completion_checker
 
 from flux_point_calculator import FluxPointCalculator
 
-FPA_LOC = 'data/flux_per_amp_values.csv'
+FPA_LOC = 'data/flux_per_amp_values.csv' # TODO remove hardcode
 
 POINT_FLUX_CONFIG_INDEX_ABBREVIATION = 'PFCI'
 TABLE_AXIS_CONFIG_INDEX_ABBREVIATION = 'TACI'
 
 COILS_TO_IGNORE = ['Inner Coil', 'Nose Coil', 'PFC_3', 'PlasmaCurrent']
-
-#TODO rename files to be shroter
 
 class FluxPointCoilErrorFactorTableGenerator():
     '''
@@ -65,13 +63,10 @@ class FluxPointCoilErrorFactorTableGenerator():
         with open(config_yaml_path, 'r') as f:
             self.config = yaml.safe_load(f)
 
-        self.table_axis_configs = pd.read_csv(self.config['table_axis_config_path'])
-        self.flux_point_configs = pd.read_csv(self.config['flux_point_values_path'])
+        self.table_axis_configs = pd.read_csv(self.config['table_axis_config_path'])[:5] # TODO remove shortening
+        self.flux_point_configs = pd.read_csv(self.config['flux_point_values_path'])[:5]
 
-        self.num_table_axis_configs = len(self.table_axis_configs)
-        self.num_flux_point_configs = len(self.flux_point_configs)
-
-        self.flux_point_calculator = FluxPointCalculator(FPA_LOC)
+        self.flux_point_calculator = FluxPointCalculator(FPA_LOC) # TODO define this in the config, this should be in ext_psi_files
 
         table_metadata_file = self.config['base_table_metadata_path']
         with open(table_metadata_file, 'r') as f:
@@ -84,6 +79,10 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.base_table_flux_point_config = self.flux_point_calculator.get_flux_at_points(self.base_table_coil_currents)
         self.flux_point_configs = pd.concat((pd.DataFrame(self.base_table_flux_point_config, index=[0]), self.flux_point_configs), ignore_index=True)
         self.CEF_table_to_base_table_flux_point_diffs = self.flux_point_configs - pd.Series(self.base_table_flux_point_config)
+
+        self.num_equil = len(self.table_axis_configs) * len(self.flux_point_configs)
+        self.num_table_axis_configs = len(self.table_axis_configs)
+        self.num_flux_point_configs = len(self.flux_point_configs)
 
         self.name = f'CEF_{self.base_table_metadata["description"]}_{self.base_table_metadata["lut_date"]}'
         if suffix != '':
@@ -102,6 +101,12 @@ class FluxPointCoilErrorFactorTableGenerator():
         self._flux_point_configs_diffs_to_base_table: pd.DataFrame = None
 
         self.flux_point_names = list(self.flux_point_calculator.flux_per_amp_df.index)
+
+        self.flagships_env_file = os.environ.get('FLAGSHIPS_ENV_FILE')
+        self.flagships_python_bin = '/home/brendan.posehn/anaconda3/envs/fs_sklearn_env/bin/python3.9' # TODO make a required env var? 
+
+        self.recon_env_file = os.environ.get('RECON_ENV_FILE')
+        self.recon_python_bin = '/home/brendan.posehn/aurora_repos/reconstruction/venv/bin/python'
 
     def serialize(self):
         with open(self.serialized_path, 'wb') as f:
@@ -130,6 +135,7 @@ class FluxPointCoilErrorFactorTableGenerator():
         dc_file_paths = self._generate_dc_files()
 
         os.makedirs(self.run_params_output_dir, exist_ok=True)
+        os.makedirs(self.equil_output_dir, exist_ok=True)
 
         fs_root = os.getenv('FS_ROOT')
 
@@ -145,7 +151,7 @@ class FluxPointCoilErrorFactorTableGenerator():
                                                table_axis_config_row['NevinsC'], table_axis_config_row['NevinsY'])
                 pressure_curve = None
 
-                Ishaft = 1.0e6 # self.base_table_metadata['Ishaft']
+                Ishaft = 1.0e6 # self.base_table_metadata['Ishaft'] # TODO right yaml ? 
                 Ipl = table_axis_config_row['CurrentRatio'] * Ishaft
                 psi_lim = 0
 
@@ -160,7 +166,8 @@ class FluxPointCoilErrorFactorTableGenerator():
                                                      table_axis_config_row['beta_pol1_setpoint'], psi_lim,
                                                      expected_opoint=self.base_table_metadata['expected_opoint'], 
                                                      pressure_curve=pressure_curve,
-                                                     mesh_resolution=self.base_table_metadata['mesh_resolution'])
+                                                     mesh_resolution=self.base_table_metadata['mesh_resolution'],
+                                                     use_csharp_solver=False)
                 
                 with open(os.path.join(self.run_params_output_dir, equil_name[:-5] + '.pickle'), 'wb') as f:
                     pickle.dump(run_params, f)
@@ -170,17 +177,19 @@ class FluxPointCoilErrorFactorTableGenerator():
         args = PickledRunParamsParallelWorkerArgs(self.run_params_output_dir, write_to_sql=False,
                                                   output_root=self.equil_output_dir, force_solve=True, skip_solve=False,
                                                   force_postproc=False, force_all_skip_none=False, skip_postproc=True)
+        args.num_jobs = self.num_equil
         launcher = split.Launcher(self.fs_job_name, PickledRunParamsParallelWorker, vars(args),
-                                   env_file=os.environ.get('FLAGSHIPS_ENV_FILE'))
+                                   env_file=self.flagships_env_file, python_bin=self.flagships_python_bin, clear=True)
         launcher.launch()
-        launcher.write_checker(equilibria_completion_checker.CoilErrorFactorEquilibriaCompletionChecker)
+        launcher.write_checker(equilibria_completion_checker.EquilibriaCompletionChecker, cron_workdir=os.getcwd(), cronlog_file='equilibria_completion_checker_log.txt',
+                                checker_env_file=self.recon_env_file, checker_python_bin=self.recon_python_bin)
 
     def _perform_reconstructions(self):
 
-        # need to have same density profiles 
-        self._make_density_profiles_json()
+        # need to have same density profiles for all ta configs at each flux point config
+        self._make_density_profiles_json() # TODO confirm things see correct density 
 
-        args = {'table': self.recons_job_name, #TODO REMOVE hardcoded suffix 
+        args = {'table': self.recons_job_name,
                 'hdf_dir': self.equil_output_dir,
                 'cals_dir': None,
                 'fs_table': self.config['recon_table'],
@@ -190,16 +199,16 @@ class FluxPointCoilErrorFactorTableGenerator():
                 'experiment': 'pi3b',
                 'cals_dir': os.path.join(os.getenv('RECONCAL_ROOT'), 'pi3b', 'reconstruction_filter_calibration'),
                 'num_workers': 1,
+                'num_jobs': self.num_equil,
                 } 
         
         from reconstruction.tools.testcase_tools.csv_tools.testcase_parallel_worker import TestcaseParallelWorker
 
         os.makedirs(self.recon_output_dir, exist_ok=True)
 
-        launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args, env_file=os.environ.get('RECON_ENV_FILE'))
-        launcher.write_checker(testcase_completion_checker.CoilErrorFactorTestcaseCompletionChecker)
-
+        launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args, env_file=self.recon_env_file, python_bin=self.recon_python_bin, clear=True)
         launcher.launch()
+        launcher.write_checker(testcase_completion_checker.TestcaseCompletionChecker, cron_workdir=os.getcwd(), cronlog_file='testcase_completion_checker_log.txt')
 
     def _make_density_profiles_json(self):
         # Need the same density profile for each flux point config as will be comparing them directly
@@ -213,40 +222,6 @@ class FluxPointCoilErrorFactorTableGenerator():
             density_profiles += [DensityProfileJsonGenerator.get_random_profile(**density_profile_kwargs)]*self.num_table_axis_configs
 
         DensityProfileJsonGenerator.save_input_profiles_json(density_profiles, self.density_profiles_path)
-
-    # TODO do before first slurm array started
-    # TODO remove if not needed cuz can just copy cals 
-    def _make_recon_config(self):
-        reconcal_root = os.getenv("RECONCAL_ROOT")
-        reconcal_repo = git.Repo(reconcal_root)
-        
-        def get_user_confirmation(message):
-            print(f'{message}: [y/n]')
-            choice = input().lower()
-            if not (choice == 'y' or choice == 'yes'):
-                print('Terminating table launch process.')
-                exit()
-
-        # TODO put these into some utils, currently just ripping from table_laucnher.py 
-        if reconcal_repo.is_dirty():
-            get_user_confirmation(f'{reconcal_root} is dirty. Are you sure you want to continue without committing/stashing?')
-        
-        commit = reconcal_repo.head.commit.hexsha
-        reconcal_repo.remotes.origin.fetch()
-        commits_behind = reconcal_repo.iter_commits(f"{commit}..origin/master")
-        if len(list(commits_behind)):
-            self.get_user_confirmation(f'{reconcal_root} is behind origin/master. Continue anyway?')
-
-        base_recon_config_path = os.path.join(reconcal_root, 'reconstruction_filter_calibration',
-                'BayesianReconstructionWorkflow', 'BayesianReconstructionWorkflow', '1-', '-62135596800.yaml')
-        with open(base_recon_config_path, 'r') as f:
-            base_recon_config = yaml.safe_load(f)
-
-        single_table_recon_config = base_recon_config
-        single_table_recon_config['physics_model']['table_cfg']['tables'] = self.base_table_metadata["table_name"]
-
-        with open(self.recon_config_path, 'w') as f:
-            yaml.dump(single_table_recon_config, f)
 
     @property
     def coil_configs_at_flux_points(self):
@@ -273,17 +248,19 @@ class FluxPointCoilErrorFactorTableGenerator():
     
     def _process_testcases(self):
         testcase_results = self._read_testcase_results()
-        testcase_results.to_csv('out/testcase_results.csv', index=False)
+        testcase_results.to_csv(os.path.join(self.output_path, 'testcase_results.csv'), index=False)
 
         # testcase_results = pd.read_csv('out/testcase_results.csv')
         # # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
         recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results)
-        pickle.dump((recon_sigma_deviances_to_truth, col_names), open('out/sigma_devs_and_cols.pickle', 'wb'))
+        pickle.dump((recon_sigma_deviances_to_truth, col_names), open(os.path.join(self.output_path, 'sigma_devs_and_cols.pickle'), 'wb'))
         # recon_sigma_deviances_to_truth, col_names = pickle.load(open('out/sigma_devs_and_cols.pickle', 'rb'))
 
         # TODO naming is crazy here 
         recon_sigma_deviances_to_truth_difference_to_base_coil_config = \
             self._get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(recon_sigma_deviances_to_truth, col_names)
+
+        recon_sigma_deviances_to_truth_difference_to_base_coil_config.to_csv(os.path.join(self.output_path, 'sigma_deviances_to_truth.csv'), index=False)
 
     # TODO better naming 
     # do this at each point, whereas other way is getting the max at each point 
@@ -304,6 +281,7 @@ class FluxPointCoilErrorFactorTableGenerator():
             normd_sigma_deviance_slopes[i_flux_config] = upper_quantile_contours
 
         df = pd.DataFrame(normd_sigma_deviance_slopes, columns=cols_of_interest)
+        df = pd.concat((self.flux_point_configs, df), axis=1)
         return df
 
     def _get_recon_sigma_deviances_to_truth(self, testcase_results):
@@ -358,5 +336,5 @@ class FluxPointCoilErrorFactorTableGenerator():
     
 
 if __name__ == '__main__':
-    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'out')
+    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'out', 'd')
     table_generator.launch()
