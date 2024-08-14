@@ -22,7 +22,6 @@ print(f"NOTE: Using flagships code from {fs_path}")
 from flagships.femm_tools.run_xfemm import run_fem_file_with_new_properties
 # from flagships.table_launcher.flagships_table_parallel_worker import FlagshipsT
 from flagships.gs_solver.pickled_run_params_parallel_worker import PickledRunParamsParallelWorker, PickledRunParamsParallelWorkerArgs
-from flagships.table_launcher.table_completion_checker import TableCompletionChecker
 from flagships.gs_solver.fs_flagships import LambdaAndBetaPol1Params
 from flagships.gs_solver.fs_curves import NevinsCurve, NevinsCurveYBased
 
@@ -63,8 +62,8 @@ class FluxPointCoilErrorFactorTableGenerator():
         with open(config_yaml_path, 'r') as f:
             self.config = yaml.safe_load(f)
 
-        self.table_axis_configs = pd.read_csv(self.config['table_axis_config_path'])[:5] # TODO remove shortening
-        self.flux_point_configs = pd.read_csv(self.config['flux_point_values_path'])[:5]
+        self.table_axis_configs = pd.read_csv(self.config['table_axis_config_path'])
+        self.flux_point_configs = pd.read_csv(self.config['flux_point_values_path'])
 
         self.flux_point_calculator = FluxPointCalculator(FPA_LOC) # TODO define this in the config, this should be in ext_psi_files
 
@@ -92,6 +91,8 @@ class FluxPointCoilErrorFactorTableGenerator():
     
         self.fs_job_name = f'FS_{self.name}'
         self.recons_job_name = f'TC_{self.name}'
+        self.process_recons_job_name = f'Process_{self.name}'
+        self.process_recons_submit_script_name = f'{self.process_recons_job_name}_slurm_submit.sh'
 
         self.serialized_path = f'{self.name}.pickle'
         self.recon_config_path = os.path.join(self.output_path, f'{self.name}_BayesianReconstructionWorkflow.yaml')
@@ -122,8 +123,6 @@ class FluxPointCoilErrorFactorTableGenerator():
         serialized_path = os.sep.join(split_path[:-1] + [split_path[-1][3:]]) + '.pickle'
         with open(serialized_path, 'rb') as f:
             gen = pickle.load(f)
-
-        gen.__init__('cef_table_config.yaml', 'out') #TODO can remove but for now want to be able to change configs between runs 
 
         return gen
 
@@ -249,8 +248,7 @@ class FluxPointCoilErrorFactorTableGenerator():
     def _process_testcases(self):
         testcase_results = self._read_testcase_results()
         testcase_results.to_csv(os.path.join(self.output_path, 'testcase_results.csv'), index=False)
-
-        # testcase_results = pd.read_csv('out/testcase_results.csv')
+        # testcase_results = pd.read_csv(f'{self.output_path}/testcase_results.csv')
         # # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
         recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results)
         pickle.dump((recon_sigma_deviances_to_truth, col_names), open(os.path.join(self.output_path, 'sigma_devs_and_cols.pickle'), 'wb'))
@@ -303,14 +301,14 @@ class FluxPointCoilErrorFactorTableGenerator():
                         truth_values = single_ta_fp_config_df[col_name + '_truth']
                         recond_values = single_ta_fp_config_df[col_name + '_mean']
                         recond_sigmas = single_ta_fp_config_df[col_name + '_sigma']
-                        sigmas_off = ((truth_values - recond_values) / recond_sigmas) # TODO should abs this ?
+                        sigmas_off = ((truth_values - recond_values) / recond_sigmas)
                         sigmas_off.where(recond_sigmas > 1e-6, np.nan, inplace=True) # TODO is this valid? 
                         data[i_ta_config, i_fp_config, i_col_name] = sigmas_off.values
 
         return data, cols_of_interest
         
     def _read_testcase_results(self):
-        testcase_output_files = glob.glob('out/recons/batch_testcase_outputs/*/testcase_0.csv')
+        testcase_output_files = glob.glob(os.path.join(self.recon_output_dir, 'batch_testcase_outputs/*/testcase_0.csv'))
 
         test_filename = pd.read_csv(testcase_output_files[0])['FileName'].iloc[0]
         PFCI_start = test_filename.find(POINT_FLUX_CONFIG_INDEX_ABBREVIATION) + len(POINT_FLUX_CONFIG_INDEX_ABBREVIATION)
@@ -336,5 +334,5 @@ class FluxPointCoilErrorFactorTableGenerator():
     
 
 if __name__ == '__main__':
-    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'out', 'd')
+    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'mini')
     table_generator.launch()
