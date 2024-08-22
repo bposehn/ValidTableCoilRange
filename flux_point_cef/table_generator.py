@@ -5,6 +5,7 @@ import yaml
 import pickle
 import datetime
 import glob
+import shutil
 
 import pandas as pd
 import numpy as np
@@ -28,7 +29,7 @@ from flagships.gs_solver.fs_curves import NevinsCurve, NevinsCurveYBased
 import equilibria_completion_checker
 import testcase_completion_checker
 
-from flux_point_calculator import FluxPointCalculator
+from flux_point_calculator import FluxPointCalculator, COIL_NAMES
 
 FPA_LOC = 'data/flux_per_amp_values.csv' # TODO remove hardcode
 
@@ -56,6 +57,8 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.recon_output_dir = os.path.join(self.output_path, 'recons')
         self.run_params_output_dir = os.path.join(self.output_path, 'run_params')
         self.density_profiles_path = os.path.join(self.output_path, 'density_profiles.json')
+        self.coil_configs_path = os.path.join(self.output_path, 'coil_configs.csv')
+        self.cals_dir = os.path.join(self.output_path, 'cals')
 
         self.suffix = suffix
 
@@ -79,7 +82,19 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.flux_point_configs = pd.concat((pd.DataFrame(self.base_table_flux_point_config, index=[0]), self.flux_point_configs), ignore_index=True)
         self.CEF_table_to_base_table_flux_point_diffs = self.flux_point_configs - pd.Series(self.base_table_flux_point_config)
 
+        coil_configs = []
+        for i_fpc in range(len(self.flux_point_configs)):
+            coil_configs.append(self.flux_point_calculator.get_coils_from_fluxes(self.flux_point_configs.iloc[i_fpc].to_dict()))
+        self.coil_configs_df = pd.DataFrame(coil_configs)
+        rename_map = {col: col[5:] for col in self.coil_configs_df.columns if col.startswith('Coil_')}
+        self.coil_configs_df = self.coil_configs_df.rename(columns=rename_map)
+        self.coil_configs_df['B'] = np.zeros((len(self.coil_configs_df)))
+        # Repeat as we loop through TACs for each PFC
+        self.coil_configs_df = self.coil_configs_df.iloc[np.arange(len(self.coil_configs_df)).repeat(len(self.table_axis_configs))]
+        self.coil_configs_df = self.coil_configs_df.reset_index(drop=True)
+
         self.num_equil = len(self.table_axis_configs) * len(self.flux_point_configs)
+        self.equil_names = []
         self.num_table_axis_configs = len(self.table_axis_configs)
         self.num_flux_point_configs = len(self.flux_point_configs)
 
@@ -141,6 +156,7 @@ class FluxPointCoilErrorFactorTableGenerator():
         for i_dc_file, dc_file_path in enumerate(dc_file_paths):
             for i_table_axis_config, table_axis_config_row in self.table_axis_configs.iterrows():
                 equil_name = f'{POINT_FLUX_CONFIG_INDEX_ABBREVIATION}{i_dc_file:05d}_{TABLE_AXIS_CONFIG_INDEX_ABBREVIATION}{i_table_axis_config:05d}.hdf5'
+                self.equil_names.append(os.path.join(self.equil_output_dir, equil_name))
 
                 if 'NevinsN' in table_axis_config_row:
                     lambda_curve = NevinsCurve(table_axis_config_row['NevinsA'], table_axis_config_row['NevinsA'],
@@ -184,21 +200,24 @@ class FluxPointCoilErrorFactorTableGenerator():
                                 checker_env_file=self.recon_env_file, checker_python_bin=self.recon_python_bin)
 
     def _perform_reconstructions(self):
-
         # need to have same density profiles for all ta configs at each flux point config
         self._make_density_profiles_json() # TODO confirm things see correct density 
 
+        self.coil_configs_df.to_csv(self.coil_configs_path, index=False)
+
+        self.populate_cals_dir()
+
         args = {'table': self.recons_job_name,
-                'hdf_dir': self.equil_output_dir,
-                'cals_dir': None,
+                'hdf_files': self.equil_names,
                 'fs_table': self.config['recon_table'],
                 'density_profile_json': self.density_profiles_path,
                 'output_root': self.recon_output_dir,
                 'batch_size': 1, # TODO perhaps make it always 1 at the testcase level
                 'experiment': 'pi3b',
-                'cals_dir': os.path.join(os.getenv('RECONCAL_ROOT'), 'pi3b', 'reconstruction_filter_calibration'),
+                'cals_dir': self.cals_dir,
                 'num_workers': 1,
                 'num_jobs': self.num_equil,
+                'coil_configs_csv': self.coil_configs_path,
                 } 
         
         from reconstruction.tools.testcase_tools.csv_tools.testcase_parallel_worker import TestcaseParallelWorker
@@ -207,12 +226,10 @@ class FluxPointCoilErrorFactorTableGenerator():
 
         launcher = split.Launcher(self.recons_job_name, TestcaseParallelWorker, args, env_file=self.recon_env_file, python_bin=self.recon_python_bin, clear=True)
         launcher.launch()
-        launcher.write_checker(testcase_completion_checker.TestcaseCompletionChecker, cron_workdir=os.getcwd(), cronlog_file='testcase_completion_checker_log.txt')
+        launcher.write_checker(testcase_completion_checker.TestcaseCompletionChecker, cron_workdir=os.getcwd(), cronlog_file='testcase_completion_checker_log.txt')    
 
     def _make_density_profiles_json(self):
-        # Need the same density profile for each flux point config as will be comparing them directly
-        density_profile_kwargs = {} # TODO perhaps constrain density profiles
-
+        density_profile_kwargs = {'model': 'ZeroLCFSSigmoidDensityProfile'} # TODO perhaps constrain density profiles
         sys.path.append(os.path.join(os.getenv('AURORA_REPOS'), 'reconstruction'))
         from tools.testcase_tools.csv_tools.input_profile_json_generator import DensityProfileJsonGenerator
 
@@ -221,6 +238,26 @@ class FluxPointCoilErrorFactorTableGenerator():
             density_profiles += [DensityProfileJsonGenerator.get_random_profile(**density_profile_kwargs)]*self.num_table_axis_configs
 
         DensityProfileJsonGenerator.save_input_profiles_json(density_profiles, self.density_profiles_path)
+
+    def populate_cals_dir(self):
+        cals_base_dir = os.path.join(os.getenv('RECONCAL_ROOT'), 'pi3b', 'reconstruction_filter_calibration')
+        glob_str = os.path.join(cals_base_dir, '**', '*.yaml')
+        globbed_paths = glob.glob(glob_str, recursive=True)
+        os.makedirs(self.cals_dir, exist_ok=True)
+        for src in globbed_paths:
+            file_name = src.split(os.sep)[-3] + '.yaml'
+            shutil.copy2(src, os.path.join(self.cals_dir, file_name))
+        
+        config_file = os.path.join(self.cals_dir, 'BayesianReconstructionWorkflow.yaml')
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        config['physics_model']['table_cfg']['tables'] = [self.config['recon_table']]
+
+        with open(config_file, 'w') as f:
+            yaml.safe_dump(config, f)
+
+        # Can perform overrides specd in yaml 
 
     @property
     def coil_configs_at_flux_points(self):
@@ -334,5 +371,5 @@ class FluxPointCoilErrorFactorTableGenerator():
     
 
 if __name__ == '__main__':
-    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'mini')
+    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'fix_coils', 'tbl_j')
     table_generator.launch()
