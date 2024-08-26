@@ -65,6 +65,9 @@ class FluxPointCoilErrorFactorTableGenerator():
         with open(config_yaml_path, 'r') as f:
             self.config = yaml.safe_load(f)
 
+        os.makedirs(self.output_path, exist_ok=True)
+        shutil.copy2(config_yaml_path, os.path.join(self.output_path, 'config.yaml'))
+
         self.table_axis_configs = pd.read_csv(self.config['table_axis_config_path'])
         self.flux_point_configs = pd.read_csv(self.config['flux_point_values_path'])
 
@@ -158,12 +161,16 @@ class FluxPointCoilErrorFactorTableGenerator():
                 equil_name = f'{POINT_FLUX_CONFIG_INDEX_ABBREVIATION}{i_dc_file:05d}_{TABLE_AXIS_CONFIG_INDEX_ABBREVIATION}{i_table_axis_config:05d}.hdf5'
                 self.equil_names.append(os.path.join(self.equil_output_dir, equil_name))
 
-                if 'NevinsN' in table_axis_config_row:
-                    lambda_curve = NevinsCurve(table_axis_config_row['NevinsA'], table_axis_config_row['NevinsA'],
-                                               table_axis_config_row['NevinsC'], table_axis_config_row['NevinsN'])
-                else:
-                    lambda_curve = NevinsCurveYBased(table_axis_config_row['NevinsA'], table_axis_config_row['NevinsA'],
-                                               table_axis_config_row['NevinsC'], table_axis_config_row['NevinsY'])
+                try:
+                    if 'NevinsN' in table_axis_config_row:
+                        lambda_curve = NevinsCurve(table_axis_config_row['NevinsA'], table_axis_config_row['NevinsA'],
+                                                table_axis_config_row['NevinsC'], table_axis_config_row['NevinsN'])
+                    else:
+                        lambda_curve = NevinsCurveYBased(table_axis_config_row['NevinsA'], table_axis_config_row['NevinsA'],
+                                                table_axis_config_row['NevinsC'], table_axis_config_row['NevinsY'])
+                except Exception:
+                    continue
+                
                 pressure_curve = None
 
                 Ishaft = 1.0e6 # self.base_table_metadata['Ishaft'] # TODO right yaml ? 
@@ -192,7 +199,7 @@ class FluxPointCoilErrorFactorTableGenerator():
         args = PickledRunParamsParallelWorkerArgs(self.run_params_output_dir, write_to_sql=False,
                                                   output_root=self.equil_output_dir, force_solve=True, skip_solve=False,
                                                   force_postproc=False, force_all_skip_none=False, skip_postproc=True)
-        args.num_jobs = self.num_equil
+        args.num_jobs = len(self.equil_names)
         launcher = split.Launcher(self.fs_job_name, PickledRunParamsParallelWorker, vars(args),
                                    env_file=self.flagships_env_file, python_bin=self.flagships_python_bin, clear=True)
         launcher.launch()
@@ -283,8 +290,10 @@ class FluxPointCoilErrorFactorTableGenerator():
         return dc_file_paths
     
     def _process_testcases(self):
-        testcase_results = self._read_testcase_results()
-        testcase_results.to_csv(os.path.join(self.output_path, 'testcase_results.csv'), index=False)
+        # testcase_results = self._read_testcase_results()
+        # testcase_results.to_csv(os.path.join(self.output_path, 'testcase_results.csv'), index=False)
+        testcase_results = pd.read_csv(os.path.join(self.output_path, 'testcase_results.csv'))
+
         # testcase_results = pd.read_csv(f'{self.output_path}/testcase_results.csv')
         # # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
         recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results)
@@ -335,11 +344,13 @@ class FluxPointCoilErrorFactorTableGenerator():
                     data[i_ta_config, i_fp_config] = np.ones(len(cols_of_interest)) * np.nan
                 else:
                     for i_col_name, col_name in enumerate(cols_of_interest):
+                        fit_qualities = single_ta_fp_config_df['fit_quality']
                         truth_values = single_ta_fp_config_df[col_name + '_truth']
                         recond_values = single_ta_fp_config_df[col_name + '_mean']
                         recond_sigmas = single_ta_fp_config_df[col_name + '_sigma']
                         sigmas_off = ((truth_values - recond_values) / recond_sigmas)
                         sigmas_off.where(recond_sigmas > 1e-6, np.nan, inplace=True) # TODO is this valid? 
+                        sigmas_off.where(fit_qualities < 1.2, np.nan, inplace=True)
                         data[i_ta_config, i_fp_config, i_col_name] = sigmas_off.values
 
         return data, cols_of_interest
@@ -371,5 +382,5 @@ class FluxPointCoilErrorFactorTableGenerator():
     
 
 if __name__ == '__main__':
-    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'fix_coils', 'tbl_j')
+    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', 'new_full', '200')
     table_generator.launch()
