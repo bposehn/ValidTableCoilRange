@@ -5,6 +5,32 @@ import pandas as pd
 
 COIL_NAMES = ['Coil_A', 'Coil_C', 'Coil_D', 'PFC_1', 'PFC_2']
 
+def get_flux_per_amp_at_points(rs, zs, names, save_loc=None):
+    import femm
+
+    femm_coil_names = ['A', 'B', 'C', 'D', 'PFC_1', 'PFC_2']
+    data = pd.DataFrame()
+    femm.openfemm()
+
+    for femm_coil_name in femm_coil_names:
+        ansfile = os.path.join(os.getenv("AURORA_REPOS"), 'reconstruction', 'tools', 'table_tools',
+            'coil_current_clustering_tools', 'FEMM_plotting', 'pi3b_femm_1A', f'pi3b_asbuilt_Coil_{femm_coil_name}_1A.ans')
+        femm.opendocument(ansfile)
+
+        coil_name = 'Coil_' + femm_coil_name if len(femm_coil_name) == 1 else femm_coil_name
+        data[coil_name] = np.array([femm.mo_geta(r*1e3, z*1e3) for r, z in zip(rs, zs)])
+
+    data['r'] = rs
+    data['z'] = zs
+    data['loc_names'] = names
+
+    femm.closefemm()
+
+    if save_loc is not None:
+        data.to_csv(save_loc, index=False)
+
+    return data
+
 
 class FluxPointCalculator():
     def __init__(self, flux_point_df_loc: str):
