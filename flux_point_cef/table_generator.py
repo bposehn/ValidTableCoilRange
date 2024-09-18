@@ -6,6 +6,7 @@ import pickle
 import datetime
 import glob
 import shutil
+import argparse
 
 import pandas as pd
 import numpy as np
@@ -30,8 +31,6 @@ import equilibria_completion_checker
 import testcase_completion_checker
 
 from flux_point_calculator import FluxPointCalculator, COIL_NAMES
-
-FPA_LOC = 'data/flux_per_amp_values.csv' # TODO remove hardcode
 
 POINT_FLUX_CONFIG_INDEX_ABBREVIATION = 'PFCI'
 TABLE_AXIS_CONFIG_INDEX_ABBREVIATION = 'TACI'
@@ -71,7 +70,7 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.table_axis_configs = pd.read_csv(self.config['table_axis_config_path'])
         self.flux_point_configs = pd.read_csv(self.config['flux_point_values_path'])
 
-        self.flux_point_calculator = FluxPointCalculator(FPA_LOC) # TODO define this in the config, this should be in ext_psi_files
+        self.flux_point_calculator = FluxPointCalculator(self.config['point_flux_per_amp_path']) 
 
         table_metadata_file = self.config['base_table_metadata_path']
         with open(table_metadata_file, 'r') as f:
@@ -124,10 +123,10 @@ class FluxPointCoilErrorFactorTableGenerator():
         self.flux_point_names = list(self.flux_point_calculator.flux_per_amp_df.index)
 
         self.flagships_env_file = os.environ.get('FLAGSHIPS_ENV_FILE')
-        self.flagships_python_bin = '/home/brendan.posehn/anaconda3/envs/fs_sklearn_env/bin/python3.9' # TODO make a required env var? 
+        self.flagships_python_bin = os.environ.get('FLAGSHIPS_PYTHON_BIN') 
 
         self.recon_env_file = os.environ.get('RECON_ENV_FILE')
-        self.recon_python_bin = '/home/brendan.posehn/aurora_repos/reconstruction/venv/bin/python'
+        self.recon_python_bin = os.environ.get('RECON_PYTHON_BIN')
 
     def serialize(self):
         with open(self.serialized_path, 'wb') as f:
@@ -225,10 +224,10 @@ class FluxPointCoilErrorFactorTableGenerator():
                 'fs_table': self.config['recon_table'],
                 'density_profile_json': self.density_profiles_path,
                 'output_root': self.recon_output_dir,
-                'batch_size': 1, # TODO perhaps make it always 1 at the testcase level
+                'batch_size': 1,
                 'experiment': 'pi3b',
                 'cals_dir': self.cals_dir,
-                'num_workers': 1,
+                'num_workers': 1, 
                 'num_jobs': self.num_equil,
                 'coil_configs_csv': self.coil_configs_path,
                 } 
@@ -270,8 +269,6 @@ class FluxPointCoilErrorFactorTableGenerator():
         with open(config_file, 'w') as f:
             yaml.safe_dump(config, f)
 
-        # Can perform overrides specd in yaml 
-
     @property
     def coil_configs_at_flux_points(self):
         coil_configs = []
@@ -301,18 +298,15 @@ class FluxPointCoilErrorFactorTableGenerator():
         # testcase_results = pd.read_csv(os.path.join(self.output_path, 'testcase_results.csv'))
 
         # # recon_sigma_deviances_to_truth is [table axis config, flux config, col sigmas off]
-        recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results) # these are all nan? 
+        recon_sigma_deviances_to_truth, col_names = self._get_recon_sigma_deviances_to_truth(testcase_results) 
         pickle.dump((recon_sigma_deviances_to_truth, col_names), open(os.path.join(self.output_path, 'sigma_devs_and_cols.pickle'), 'wb'))
         # recon_sigma_deviances_to_truth, col_names = pickle.load(open('out/sigma_devs_and_cols.pickle', 'rb'))
 
-        # TODO naming is crazy here 
         recon_sigma_deviances_to_truth_difference_to_base_coil_config = \
             self._get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(recon_sigma_deviances_to_truth, col_names)
 
         recon_sigma_deviances_to_truth_difference_to_base_coil_config.to_csv(os.path.join(self.output_path, 'sigma_deviances_to_truth.csv'), index=False)
 
-    # TODO better naming 
-    # do this at each point, whereas other way is getting the max at each point 
     def _get_unstructured_recon_sigma_deviances_to_truth_difference_to_base_coil_config(self, recon_sigma_deviances_to_truth, cols_of_interest):
         UPPER_QUANTILE_VALUE = .90 # TODO this should be in config? 
 
@@ -406,5 +400,12 @@ class FluxPointCoilErrorFactorTableGenerator():
     
 
 if __name__ == '__main__':
-    table_generator = FluxPointCoilErrorFactorTableGenerator('cef_table_config.yaml', '2_pt')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('coil_error_table_config', type=str, help='Path to coil error factor config')
+    parser.add_argument('--output_dir', '-d', required=True, type=str, help='Output directory')
+    parser.add_argument('--suffix', '-s', required=False, default='', help='Job name suffix')
+
+    args = parser.parse_args()
+
+    table_generator = FluxPointCoilErrorFactorTableGenerator(args.coil_error_table_config, args.output_dir, args.suffix)
     table_generator.launch()

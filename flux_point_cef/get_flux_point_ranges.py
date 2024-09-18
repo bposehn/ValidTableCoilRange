@@ -4,10 +4,11 @@ import time
 import numpy as np
 import pandas as pd
 
+from flux_point_calculator import FluxPointCalculator
 from GF_data_tools.fetch_data import get_shot_scalars
 
 COIL_NAMES = ['Coil_A', 'Coil_C', 'Coil_D', 'PFC_1', 'PFC_2']
-QUERY_COIL_NAMES = ['B', 'C', 'D', 'E', 'F']
+QUERY_COIL_NAMES = ['A', 'C', 'D', 'E', 'F']
 
 def get_shot_coil_configs(min_shot: int, max_shot: int, num_shots: int):
 
@@ -49,11 +50,16 @@ def get_shot_coil_configs(min_shot: int, max_shot: int, num_shots: int):
     return coil_configs, used_shot_numbers
 
 if __name__ == '__main__':
-    t1 = time.time()
-    arr, shot_numbers = get_shot_coil_configs(19000, 22550, 3000)
-    t2 = time.time()
+    # arr, shot_numbers = get_shot_coil_configs(19000, 22550, 3000)
+    # df = pd.DataFrame(arr, columns=COIL_NAMES)
+    # df['Shot'] = shot_numbers
+    # df.to_csv('coil_configs.csv', index=False)
 
-    np.save('coil_configs.npy', arr)
+    coil_configs = pd.read_csv('data/shot_23000_to_20000_coil_configs.csv')
+    fpc = FluxPointCalculator('data/new_points_flux_per_amp.csv')
 
-    print(t2 - t1)
-    breakpoint()
+    flux_values = coil_configs[COIL_NAMES] @ fpc.flux_per_amp_df[COIL_NAMES].T
+    flux_values = flux_values.divide(flux_values['Psi,Equator'], axis=0)
+    flux_values['Shot'] = coil_configs['Shot']
+
+    flux_values.to_csv('flux_configs.csv', index=False)

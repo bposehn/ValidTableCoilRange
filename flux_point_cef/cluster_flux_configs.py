@@ -20,10 +20,9 @@ def get_clustered_dists_to_shot_configs(n_clusters: int, point_flux_values: pd.D
     return clustering_flux_values_df
 
 if __name__ == '__main__':
-    shot_flux_configs = pd.read_csv('data/shot_23000_to_20000_point_flux_configs.csv')
-        
-    point_flux_nams = ['Psi,Equator', 'Psi,Out.Throat', 'Psi,In.Throat', 'Psi,Upper']
-
-    clustered_flux_df = get_clustered_dists_to_shot_configs(200, shot_flux_configs, point_flux_nams)
-
-    breakpoint()
+    shot_flux_configs = pd.read_csv('data/new_points_shot_23000_to_20000_point_flux_configs.csv')
+    
+    point_flux_names = ['Psi,Equator', 'Psi,Inner', 'Psi,Outer']
+    clustered_flux_df = get_clustered_dists_to_shot_configs(100, shot_flux_configs, point_flux_names)
+    
+    clustered_flux_df.to_csv('clustered_flux_points.csv', index=False)

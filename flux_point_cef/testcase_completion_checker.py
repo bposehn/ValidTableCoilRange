@@ -21,6 +21,9 @@ class TestcaseCompletionChecker(CompletionChecker):
         super().partial_success_behaviour()
         self.process_testcases()     
     
+    # def halted_behaviour(self):
+    #     self.process_testcases()
+
     def failure_behaviour(self):
         counts_by_status = self.categorize_defined_jobs()
         completed = counts_by_status[[JobStatus.SUCCESS, JobStatus.ACCEPTABLE_ERROR, JobStatus.ERROR]].sum() == self.total_num_jobs
@@ -32,7 +35,6 @@ class TestcaseCompletionChecker(CompletionChecker):
             self.still_working_behaviour()
 
     def process_testcases(self):
-        print('Starting processing testcases with slurm id: ')
         contents =  '\n'.join((
                     '#!/bin/bash',
                     '#SBATCH --partition=batch',

@@ -46,6 +46,9 @@ class FluxPointCalculator():
 
         return point_flux_values.to_dict()[0]
     
+    def get_fluxes_at_points(self, coil_config_df: pd.DataFrame):
+        return coil_config_df[COIL_NAMES] @ self.flux_per_amp_df[COIL_NAMES].T
+
     def get_coils_from_fluxes(self, flux_values: Dict[str, float]):
         point_names = list(flux_values.keys())
         flux_values = np.array([flux_values[point_name] for point_name in point_names])
